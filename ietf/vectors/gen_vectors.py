@@ -7,19 +7,23 @@ Design choices (recorded in the emitted document):
     (Control Plane / Orchestrator / Worker / Worker2 / Attacker), so each JWS
     vector is the twin of an existing CBOR vector where a twin exists.
   * AAT payloads are JCS-canonical (RFC 8785). The draft only *requires* JCS
-    for the PoP payload (§5.2); for AATs it is a vector choice that makes the
+    for the PoP payload (§7.2); for AATs it is a vector choice that makes the
     signing input reproducible. Verifiers must accept the bytes as presented,
     they must not re-canonicalize an AAT before verifying its signature.
-  * Headers carry explicit typing: {"alg":"EdDSA","typ":"aat+jwt"} for
-    AATs and {"alg":"EdDSA","typ":"aat-pop+jwt"} for PoP JWTs (RFC 8725 §3.11).
-  * aat_aud is REQUIRED on the PoP and MUST match the configured audience.
+  * Headers carry explicit typing: {"alg":"Ed25519","typ":"aat+jwt"} for
+    AATs and {"alg":"Ed25519","typ":"aat-pop+jwt"} for PoP JWTs (RFC 8725 §3.11).
+  * aat_aud is OPTIONAL on the PoP; when present it MUST identify this
+    enforcement point (7d). Every chain token that carries `aud` must name
+    this enforcement point (6c). A PoP `nonce` is checked when the vector's
+    policy says the enforcement point requires one (7h).
   * `all` subsumption: every parent clause is subsumed by at least one derived
     clause; a derived clause MAY cover several parent clauses.
   * Verification clock: now = 1704067500 (2024-01-01T00:05:00Z).
     MAX_IAT_SKEW = 30, MAX_TOKEN_LIFETIME = 90 days, MAX_DELEGATION_DEPTH = 8,
-    PoP window = ±30 s, audience "https://tools.example.com" required.
+    PoP window = ±30 s, this enforcement point is "https://tools.example.com";
+    audience and nonce are required only where a vector's policy says so.
 
-Every vector is checked by the independent §7 verifier in this file before it
+Every vector is checked by the independent §8 verifier in this file before it
 is written. A vector whose actual verdict differs from its expected verdict
 aborts generation.
 """
@@ -155,8 +159,8 @@ for n, k in KEYS.items():
     assert k.pub_raw.hex() == EXPECTED_PUB_HEX[n], n
 
 # -02 proposal (agreed 2026-09-13): explicit typing per RFC 8725 §3.11, DPoP-style.
-HEADER = {"alg": "EdDSA", "typ": "aat+jwt"}
-POP_HEADER = {"alg": "EdDSA", "typ": "aat-pop+jwt"}
+HEADER = {"alg": "Ed25519", "typ": "aat+jwt"}
+POP_HEADER = {"alg": "Ed25519", "typ": "aat-pop+jwt"}
 
 
 def jws_sign(payload: dict, signer: Key, header: dict = HEADER) -> dict:
@@ -191,7 +195,7 @@ def aat(tools: dict) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Independent §7 verifier (subset sufficient for the vectors; fail-closed)
+# Independent §8 verifier (subset sufficient for the vectors; fail-closed)
 # ---------------------------------------------------------------------------
 class Deny(Exception):
     def __init__(self, step: str, why: str = ""):
@@ -214,15 +218,28 @@ def _verify_jws(compact: str, pub: Ed25519PublicKey, step_alg: str, step_sig: st
         header = json.loads(b64u_dec(h))
     except Exception:
         raise Deny(step_alg, "unparseable header")
-    if header.get("alg") != "EdDSA":
+    if header.get("alg") != "Ed25519":
         raise Deny(step_alg, f"alg={header.get('alg')!r} not on allowlist")
     if header.get("typ") != expected_typ:
         raise Deny(step_alg, f"typ={header.get('typ')!r}, expected {expected_typ!r}")
+    if "crit" in header:
+        # This verifier understands no extension header parameters (§3.5, RFC 7515 §4.1.11).
+        raise Deny(step_alg, f"crit lists parameters this verifier does not understand: {header['crit']!r}")
     try:
         pub.verify(b64u_dec(s), f"{h}.{p}".encode("ascii"))
     except InvalidSignature:
         raise Deny(step_sig, "signature does not verify")
-    return json.loads(b64u_dec(p))
+    try:
+        return json.loads(b64u_dec(p), object_pairs_hook=_no_dup_keys)
+    except ValueError:
+        raise Deny(step_sig, "duplicate JSON member name")
+
+
+def _no_dup_keys(pairs):
+    keys = [k for k, _ in pairs]
+    if len(keys) != len(set(keys)):
+        raise ValueError("duplicate member name")
+    return dict(pairs)
 
 
 def _jwk_pub(jwk: dict, step: str = "3l") -> Ed25519PublicKey:
@@ -246,14 +263,111 @@ def _aat_entry(claims: dict, step: str, exactly_one: bool):
         raise Deny(step, f"{len(ents)} attenuating_agent_token entries")
     if len(ents) > 1:
         raise Deny(step, "more than one attenuating_agent_token entry")
+    if ents and not isinstance(ents[0].get("tools"), dict):
+        raise Deny(step, "attenuating_agent_token entry has no tools object")
     return ents[0] if ents else {"type": "attenuating_agent_token", "tools": {}}
+
+
+CORE_TYPES = ("exact", "range", "one_of", "not_one_of", "contains", "subset", "wildcard", "all", "any")
+MAX_SAFE_INT = 2**53 - 1
+
+
+def _has_big_int(v) -> bool:
+    """§3.4: True if any number is not admissible, i.e. does not survive the
+    JCS round trip through an IEEE 754 double. Python ints keep the digits as
+    written, so the check is exact for them; the vectors contain no floats."""
+    if isinstance(v, bool):
+        return False
+    if isinstance(v, int):
+        try:
+            return int(float(v)) != v
+        except OverflowError:
+            return True
+    if isinstance(v, float):
+        return False
+    if isinstance(v, list):
+        return any(_has_big_int(x) for x in v)
+    if isinstance(v, dict):
+        return any(_has_big_int(x) for x in v.values())
+    return False
+
+
+def _well_formed(c) -> bool:
+    """§3.4 well-formedness for the core types."""
+    t = c.get("constraint_type")
+    if _has_big_int(c):
+        return False
+    if t == "exact":
+        return "value" in c and (c["value"] is None or isinstance(c["value"], (str, int, float, bool)))
+    if t == "one_of":
+        return isinstance(c.get("values"), list) and len(c["values"]) > 0
+    if t == "not_one_of":
+        return isinstance(c.get("excluded"), list)
+    if t == "contains":
+        return isinstance(c.get("required"), list)
+    if t == "subset":
+        return isinstance(c.get("allowed"), list)
+    if t == "range":
+        lo, hi = c.get("min"), c.get("max")
+        if "min_inclusive" in c and lo is None or "max_inclusive" in c and hi is None:
+            return False
+        for k in ("min", "max"):
+            if k in c and (isinstance(c[k], bool) or not isinstance(c[k], (int, float))):
+                return False
+        for k in ("min_inclusive", "max_inclusive"):
+            if k in c and not isinstance(c[k], bool):
+                return False
+        return lo is None or hi is None or lo <= hi
+    return True
+
+
+WILDCARD = {"constraint_type": "wildcard"}
+
+
+def _norm(cmap: dict) -> dict:
+    """§3.3: an empty constraint map is {"*": wildcard}."""
+    return cmap if cmap else {"*": WILDCARD}
+
+
+def _req(c: dict) -> bool:
+    """§3.3: an entry is required unless it carries `optional: true`."""
+    return not c.get("optional", False)
+
+
+def _check_map(cmap: dict):
+    """§3.4 well-formedness of a whole constraint map (steps 3n/4o)."""
+    for k, c in cmap.items():
+        if not isinstance(c, dict):
+            raise Deny("3n/4o", f"constraint for {k!r} is not an object")
+        if "optional" in c and not isinstance(c["optional"], bool):
+            raise Deny("3n/4o", "optional is not a boolean")
+        if k == "*" and (c.get("constraint_type") != "wildcard" or "optional" in c):
+            raise Deny("3n/4o", "the * entry must be a wildcard constraint")
+        _cdepth(c)
 
 
 def _cdepth(c, d=1):
     if d > MAX_CONSTRAINT_DEPTH:
         raise Deny("3n/4o", "constraint tree too deep")
+    if d > 1 and "optional" in c:
+        raise Deny("3n/4o", "optional appears inside all/any")
+    if c.get("constraint_type") not in CORE_TYPES:
+        raise Deny("3n/4o", f"unrecognized constraint_type {c.get('constraint_type')!r} (fail-closed)")
+    if not _well_formed(c):
+        raise Deny("3n/4o", "constraint not well-formed")
+    if c.get("constraint_type") in ("all", "any") and not c.get("constraints"):
+        raise Deny("3n/4o", "empty all/any")
     for sub in c.get("constraints", []) if c.get("constraint_type") in ("all", "any") else []:
         _cdepth(sub, d + 1)
+
+
+def _eq(a, b) -> bool:
+    """Value equality per §3.4: identical JCS serializations."""
+    return jcs(a) == jcs(b)
+
+
+def _in(v, xs) -> bool:
+    return any(_eq(v, x) for x in xs)
 
 
 def check(c: dict, v) -> bool:
@@ -261,9 +375,9 @@ def check(c: dict, v) -> bool:
     if t == "wildcard":
         return True
     if t == "exact":
-        return v == c["value"] and type(v) is type(c["value"])
+        return _eq(v, c["value"])
     if t == "one_of":
-        return any(v == x and type(v) is type(x) for x in c["values"])
+        return _in(v, c["values"])
     if t == "range":
         if isinstance(v, bool) or not isinstance(v, (int, float)):
             return False
@@ -274,15 +388,15 @@ def check(c: dict, v) -> bool:
             return False
         return True
     if t == "not_one_of":
-        return all(v != x or type(v) is not type(x) for x in c["excluded"])
+        return not _in(v, c["excluded"])
     if t == "contains":
         if not isinstance(v, list):
             return False
-        return all(any(x == r and type(x) is type(r) for x in v) for r in c["required"])
+        return all(_in(r, v) for r in c["required"])
     if t == "subset":
         if not isinstance(v, list):
             return False
-        return all(any(x == a and type(x) is type(a) for a in c["allowed"]) for x in v)
+        return all(_in(x, c["allowed"]) for x in v)
     if t == "all":
         return all(check(s, v) for s in c["constraints"])
     if t == "any":
@@ -311,14 +425,14 @@ def subsumes(child: dict, parent: dict) -> bool:
         return all(any(subsumes(cd, cp) for cp in parent["constraints"]) for cd in child["constraints"])
     if ct == "exact":
         if pt == "exact":
-            return child["value"] == parent["value"]
+            return _eq(child["value"], parent["value"])
         if pt == "one_of":
-            return child["value"] in parent["values"]
+            return _in(child["value"], parent["values"])
         if pt == "range":
             return isinstance(child["value"], (int, float)) and not isinstance(child["value"], bool) and check(parent, child["value"])
         return False
     if ct == "one_of" and pt == "one_of":
-        return all(x in parent["values"] for x in child["values"])
+        return all(_in(x, parent["values"]) for x in child["values"])
     if ct == "range" and pt == "range":
         pmin, pmax = parent.get("min"), parent.get("max")
         cmin, cmax = child.get("min"), child.get("max")
@@ -334,16 +448,18 @@ def subsumes(child: dict, parent: dict) -> bool:
                 return False
         return True
     if ct == "not_one_of" and pt == "not_one_of":
-        return all(x in child["excluded"] for x in parent["excluded"])
+        return all(_in(x, child["excluded"]) for x in parent["excluded"])
     if ct == "contains" and pt == "contains":
-        return all(x in child["required"] for x in parent["required"])
+        return all(_in(x, child["required"]) for x in parent["required"])
     if ct == "subset" and pt == "subset":
-        return all(x in parent["allowed"] for x in child["allowed"])
+        return all(_in(x, parent["allowed"]) for x in child["allowed"])
     return False  # every undeclared pair is invalid
 
 
-def verify_chain(chain: list[str], trust_anchors: list[Ed25519PublicKey], tool: str, args: dict,
-                 pop_jwt: str, now: int = NOW, audience: str | None = AUDIENCE) -> str:
+def verify_chain(chain: list[str], trust_anchors: list[tuple[str, Ed25519PublicKey]], tool: str, args: dict,
+                 pop_jwt: str, now: int = NOW, audience: str = AUDIENCE,
+                 require_pop_aud: bool = False, require_chain_aud: bool = False,
+                 nonce: str | None = None) -> str:
     """Returns 'PERMIT' or raises Deny(step)."""
     if not chain:
         raise Deny("1", "empty chain")
@@ -362,16 +478,22 @@ def verify_chain(chain: list[str], trust_anchors: list[Ed25519PublicKey], tool: 
 
     # 3: root
     root = None
+    anchor_iss = None
     last_err = None
-    for ta in trust_anchors:
+    for ta_iss, ta_pub in trust_anchors:
         try:
-            root = _verify_jws(chain[0], ta, "3a", "3b")
+            root = _verify_jws(chain[0], ta_pub, "3a", "3b")
+            anchor_iss = ta_iss
             break
         except Deny as e:
             last_err = e
     if root is None:
         raise last_err
-    if root.get("del_depth") != 0:
+    for k in ("iat", "exp"):
+        if not (isinstance(root.get(k), int) and not isinstance(root.get(k), bool)):
+            raise Deny("3b", f"root {k} missing")
+    if not (isinstance(root.get("del_depth"), int) and not isinstance(root.get("del_depth"), bool)
+            and root["del_depth"] == 0):
         raise Deny("3c", "root del_depth != 0")
     if "par_hash" in root:
         raise Deny("3d", "root has par_hash")
@@ -390,11 +512,12 @@ def verify_chain(chain: list[str], trust_anchors: list[Ed25519PublicKey], tool: 
         raise Deny("3j", "jti")
     if not (isinstance(root.get("iss"), str) and ":" in root["iss"]):
         raise Deny("3k", "iss not URI")
+    if root["iss"] != anchor_iss:
+        raise Deny("3k", "iss does not match the verifying trust anchor")
     _jwk_pub(root.get("cnf", {}).get("jwk", {}), "3l")
     root_aat = _aat_entry(root, "3m", exactly_one=True)
     for cm in root_aat["tools"].values():
-        for c in cm.values():
-            _cdepth(c)
+        _check_map(cm)
 
     # 4: adjacent pairs
     claims = [root]
@@ -406,6 +529,14 @@ def verify_chain(chain: list[str], trust_anchors: list[Ed25519PublicKey], tool: 
                         ("iss", "4b5"), ("iat", "4b5"), ("exp", "4b5"), ("par_hash", "4b5")):
             if f not in child:
                 raise Deny(step, f"{f} missing")
+        if not (isinstance(child["jti"], str) and child["jti"]):
+            raise Deny("4b1", "jti not a non-empty string")
+        if not all(isinstance(child[k], int) and not isinstance(child[k], bool) and child[k] >= 0
+                   for k in ("del_depth", "del_max_depth")):
+            raise Deny("4b4", "del_depth/del_max_depth not non-negative integers")
+        if not (isinstance(child["iss"], str) and isinstance(child["par_hash"], str)
+                and all(isinstance(child[k], int) and not isinstance(child[k], bool) for k in ("iat", "exp"))):
+            raise Deny("4b5", "iss/par_hash not strings or iat/exp not NumericDate")
         _jwk_pub(child["cnf"].get("jwk", {}), "4b2")
         if child["iss"] != _thumb_uri(parent["cnf"]["jwk"]):
             raise Deny("4c", "iss != thumbprint(parent.cnf.jwk)")
@@ -432,16 +563,25 @@ def verify_chain(chain: list[str], trust_anchors: list[Ed25519PublicKey], tool: 
         child_aat = _aat_entry(child, "4n", exactly_one=False)
         parent_aat = _aat_entry(parent, "4n", exactly_one=False)
         for cm in child_aat["tools"].values():
-            for c in cm.values():
-                _cdepth(c)
+            _check_map(cm)
         for tname, cmap in child_aat["tools"].items():
             if tname not in parent_aat["tools"]:
                 raise Deny("4p1", f"tool {tname!r} not in parent")
-            pmap = parent_aat["tools"][tname]
-            if pmap and set(pmap) != set(cmap):
-                raise Deny("4p2", f"constraint keys differ for {tname!r}")
-            for k in set(pmap) & set(cmap):
-                if not subsumes(cmap[k], pmap[k]):
+            pm, cm = _norm(parent_aat["tools"][tname]), _norm(cmap)
+            # 4p2: key rules of §4.5
+            for k in cm:
+                if k not in pm and "*" not in pm:
+                    raise Deny("4p2", f"{tname}: child names {k!r}, which the parent neither names nor admits via *")
+            for k in pm:
+                if k != "*" and k not in cm and (_req(pm[k]) or "*" in cm):
+                    raise Deny("4p2", f"{tname}: child omits {k!r}, which the parent requires or which * would readmit")
+            # 4p3: a required argument stays required
+            for k in cm:
+                if k != "*" and k in pm and _req(pm[k]) and not _req(cm[k]):
+                    raise Deny("4p3", f"{tname}.{k}: child makes a required argument optional")
+            # 4p4: each child constraint attenuates the parent's (or the parent's *)
+            for k, c in cm.items():
+                if not subsumes(c, pm[k] if k in pm else pm["*"]):
                     raise Deny("4p4", f"{tname}.{k} does not subsume")
         h, p, _ = _split(chain[i - 1])
         if child["par_hash"] != b64u(hashlib.sha256(f"{h}.{p}".encode("ascii")).digest()):
@@ -454,29 +594,58 @@ def verify_chain(chain: list[str], trust_anchors: list[Ed25519PublicKey], tool: 
     leaf_aat = _aat_entry(leaf, "6a", exactly_one=True)
     if tool not in leaf_aat["tools"]:
         raise Deny("6b", f"tool {tool!r} not authorized")
-    cmap = leaf_aat["tools"][tool]
-    if cmap:
-        for a in args:
-            if a not in cmap:
-                raise Deny("6b", f"argument {a!r} not in closed-world map")
-        for a in cmap:
-            if a not in args:
-                raise Deny("6b", f"constrained argument {a!r} absent")
-        for a, c in cmap.items():
-            if not check(c, args[a]):
+    if _has_big_int(args):
+        raise Deny("6b", "argument number does not survive the JCS round trip")
+    m = _norm(leaf_aat["tools"][tool])
+    for a, v in args.items():
+        if a in m and a != "*":
+            if not check(m[a], v):
                 raise Deny("6b", f"argument {a!r} violates constraint")
+        elif "*" in m:
+            if not check(m["*"], v):
+                raise Deny("6b", f"argument {a!r} violates the * constraint")
+        else:
+            raise Deny("6b", f"argument {a!r} not in closed-world map")
+    for a, c in m.items():
+        if a != "*" and _req(c) and a not in args:
+            raise Deny("6b", f"required argument {a!r} absent")
+    # 6c: chain audience. Every token that carries aud must name this
+    # enforcement point (RFC 7519 §4.1.3 applied per token); a derived token
+    # can add or narrow the restriction but never remove one.
+    for i, c in enumerate(claims):
+        if "aud" in c:
+            vals = c["aud"] if isinstance(c["aud"], list) else [c["aud"]]
+            if audience not in vals:
+                raise Deny("6c", f"token {i} aud does not identify this enforcement point")
+    if require_chain_aud and not any("aud" in c for c in claims):
+        raise Deny("6c", "chain audience required by policy but no token carries aud")
 
     pop = _verify_jws(pop_jwt, _jwk_pub(leaf["cnf"]["jwk"], "7b"), "7a", "7b", expected_typ="aat-pop+jwt")
+    for k in ("jti", "aat_id", "aat_hash", "aat_tool"):
+        if not (isinstance(pop.get(k), str) and pop[k]):
+            raise Deny("7c", f"PoP {k} missing or not a string")
+    if not (isinstance(pop.get("iat"), int) and not isinstance(pop.get("iat"), bool)):
+        raise Deny("7c", "PoP iat not a NumericDate")
+    if not isinstance(pop.get("hta"), dict):
+        raise Deny("7c", "PoP hta missing or not an object")
     if pop.get("aat_id") != leaf["jti"]:
         raise Deny("7c", "aat_id != leaf.jti")
-    if audience is not None and pop.get("aat_aud") != audience:
-        raise Deny("7d", "aat_aud mismatch")
+    leaf_si = ".".join(_split(chain[-1])[:2])
+    if pop.get("aat_hash") != b64u(hashlib.sha256(leaf_si.encode("ascii")).digest()):
+        raise Deny("7c", "aat_hash does not match the presented leaf")
+    pop_aud = pop.get("aat_aud")
+    if pop_aud is not None and pop_aud != audience:
+        raise Deny("7d", "aat_aud does not identify this enforcement point")
+    if pop_aud is None and require_pop_aud:
+        raise Deny("7d", "aat_aud required by policy but absent")
     if pop.get("aat_tool") != tool:
         raise Deny("7e", "aat_tool != tool")
     if jcs(pop.get("hta")) != jcs(args):
         raise Deny("7f", "hta != args (JCS)")
     if abs(pop["iat"] - now) > POP_WINDOW:
         raise Deny("7g", "PoP iat outside window")
+    if nonce is not None and pop.get("nonce") != nonce:
+        raise Deny("7h", "nonce required by policy but absent or not issued by this enforcement point")
     return "PERMIT"
 
 
@@ -484,7 +653,7 @@ def verify_chain(chain: list[str], trust_anchors: list[Ed25519PublicKey], tool: 
 # Vector construction
 # ---------------------------------------------------------------------------
 CP, ORCH, WK, WK2, ATK = (KEYS[n] for n in ("control_plane", "orchestrator", "worker", "worker2", "attacker"))
-TRUST = [CP.pub]
+TRUST = [(ROOT_ISS, CP.pub)]
 
 Q3, Q4 = "/data/q3-report.pdf", "/data/q4-report.pdf"
 
@@ -519,10 +688,14 @@ def pop_sign(payload: dict, signer: Key, header: dict = POP_HEADER) -> dict:
     return jws_sign(payload, signer, header)
 
 
-def pop_claims(jti: str, leaf_tok: dict, tool: str, hta: dict, iat=NOW, aud=AUDIENCE) -> dict:
-    c = {"jti": jti, "iat": iat, "aat_id": leaf_tok["payload"]["jti"], "aat_tool": tool, "hta": hta}
+def pop_claims(jti: str, leaf_tok: dict, tool: str, hta: dict, iat=NOW, aud=AUDIENCE,
+               nonce: str | None = None) -> dict:
+    c = {"jti": jti, "iat": iat, "aat_id": leaf_tok["payload"]["jti"], "aat_hash": par_hash_of(leaf_tok),
+         "aat_tool": tool, "hta": hta}
     if aud is not None:
         c["aat_aud"] = aud
+    if nonce is not None:
+        c["nonce"] = nonce
     return c
 
 
@@ -530,10 +703,13 @@ VECTORS: list[dict] = []
 
 
 def add(vid: str, title: str, twin: str | None, desc: str, chain: list[dict], pop: dict, tool: str,
-        args: dict, expect: str, expect_step: str | None = None, now: int = NOW, notes: list[str] | None = None):
+        args: dict, expect: str, expect_step: str | None = None, now: int = NOW, notes: list[str] | None = None,
+        policy: dict | None = None):
+    """`policy` is what this enforcement point requires beyond the base algorithm:
+    require_pop_aud, require_chain_aud, nonce (the value it issued)."""
     compact = [t["compact"] for t in chain]
     try:
-        verdict, step = verify_chain(compact, TRUST, tool, args, pop["compact"], now=now), None
+        verdict, step = verify_chain(compact, TRUST, tool, args, pop["compact"], now=now, **(policy or {})), None
     except Deny as e:
         verdict, step = "DENY", e.step
     ok = verdict == expect and (expect == "PERMIT" or step == expect_step)
@@ -542,7 +718,7 @@ def add(vid: str, title: str, twin: str | None, desc: str, chain: list[dict], po
         sys.exit(1)
     VECTORS.append({
         "id": vid, "title": title, "cbor_twin": twin, "description": desc, "notes": notes or [],
-        "verification_time": now, "tool": tool, "args": args,
+        "verification_time": now, "tool": tool, "args": args, "policy": policy or {},
         "chain": chain, "pop": pop,
         "expected": {"verdict": expect, "step": expect_step},
     })
@@ -581,22 +757,72 @@ add("J.3", "Valid 3-level chain", "A.3",
     [L0, L1, L2], POP3, "read_file", {"path": Q3}, "PERMIT")
 
 # --- J.6 PoP variants on the valid chain -------------------------------------
-add("J.6.1", "PoP without aat_aud, verifier requires audience", "A.6",
-    "Same chain as J.3; the PoP omits aat_aud. The vector's deployment policy requires audience binding.",
+add("J.6.1", "PoP without aat_aud, enforcement point requires audience", "A.6",
+    "Same chain as J.3; the PoP omits aat_aud and this enforcement point's policy requires it (step 7d, "
+    "second sentence).",
     [L0, L1, L2], pop_sign(pop_claims(uuid7ish(0xA04), L2, "read_file", {"path": Q3}, aud=None), WK2),
-    "read_file", {"path": Q3}, "DENY", "7d",
-    notes=["-02: aat_aud is REQUIRED. Under draft-01 text a verifier with no audience policy would PERMIT "
-           "(Warden NOTES entry 8)."])
+    "read_file", {"path": Q3}, "DENY", "7d", policy={"require_pop_aud": True},
+    notes=["aat_aud is OPTIONAL in -02; this vector's policy requires it. Compare J.6.3, the same PoP under "
+           "a policy that does not (Warden NOTES entry 8)."])
 add("J.6.2", "PoP aat_aud does not identify this enforcement point", "A.6",
-    "Same chain as J.3; aat_aud is present but names https://evil.example.com.",
+    "Same chain as J.3; aat_aud is present but names https://evil.example.com. A present aat_aud MUST identify "
+    "the receiving enforcement point regardless of policy (step 7d, first sentence).",
     [L0, L1, L2], pop_sign(pop_claims(uuid7ish(0xA05), L2, "read_file", {"path": Q3},
+                                     aud="https://evil.example.com"), WK2),
+    "read_file", {"path": Q3}, "DENY", "7d", policy={"require_pop_aud": True})
+add("J.6.3", "PoP without aat_aud, enforcement point does not require audience", None,
+    "Same chain as J.3; the PoP omits aat_aud and this enforcement point has no audience policy. "
+    "aat_aud is OPTIONAL (§7.2).",
+    [L0, L1, L2], pop_sign(pop_claims(uuid7ish(0xA06), L2, "read_file", {"path": Q3}, aud=None), WK2),
+    "read_file", {"path": Q3}, "PERMIT")
+add("J.6.4", "PoP aat_aud mismatch is fatal even without an audience policy", None,
+    "Same chain as J.3; aat_aud names https://evil.example.com and this enforcement point has no audience "
+    "policy. Presence is optional; a present value MUST identify the receiver (step 7d).",
+    [L0, L1, L2], pop_sign(pop_claims(uuid7ish(0xA07), L2, "read_file", {"path": Q3},
                                      aud="https://evil.example.com"), WK2),
     "read_file", {"path": Q3}, "DENY", "7d")
 
+# --- J.6.5-7 enforcement-point nonce (§7.2 nonce, step 7h; DPoP RFC 9449 §9 pattern) -----
+NONCE = "e1c8a7f4-3b2d-4c5e-9f6a-7b8c9d0e1f2a"
+STALE_NONCE = "0f0e0d0c-0b0a-4908-8706-050403020100"
+add("J.6.5", "Nonce required, PoP omits nonce", None,
+    "Same chain as J.3; this enforcement point issued nonce " + NONCE + " and requires it. The PoP carries none.",
+    [L0, L1, L2], pop_sign(pop_claims(uuid7ish(0xA08), L2, "read_file", {"path": Q3}), WK2),
+    "read_file", {"path": Q3}, "DENY", "7h", policy={"nonce": NONCE})
+add("J.6.6", "Nonce required, PoP carries the issued nonce", None,
+    "Same chain as J.3; the PoP carries the nonce this enforcement point issued. The holder never names "
+    "the enforcement point; the nonce binds the proof to it.",
+    [L0, L1, L2], pop_sign(pop_claims(uuid7ish(0xA09), L2, "read_file", {"path": Q3}, nonce=NONCE), WK2),
+    "read_file", {"path": Q3}, "PERMIT", policy={"nonce": NONCE})
+add("J.6.7", "Nonce required, PoP carries a nonce this enforcement point did not issue", None,
+    "Same chain as J.3; the PoP carries a nonce from another enforcement point or an expired one.",
+    [L0, L1, L2], pop_sign(pop_claims(uuid7ish(0xA0A), L2, "read_file", {"path": Q3}, nonce=STALE_NONCE), WK2),
+    "read_file", {"path": Q3}, "DENY", "7h", policy={"nonce": NONCE})
+
+# --- J.6.8-10 chain audience (§3.2 aud, step 6c; Macaroon caveat / RFC 8707 pattern) ------
+AUD_ROOT = jws_sign(root_claims(uuid7ish(0x20), ROOT_TOOLS, ORCH, aud=AUDIENCE), CP)
+AUD_L1 = jws_sign(derived_claims(uuid7ish(0x21), AUD_ROOT, ORCH, WK, L1_TOOLS, IAT_ROOT + 60, 1704069000, 2), ORCH)
+add("J.6.8", "Root aud names this enforcement point", None,
+    "J.3 root and L1 with aud on the root set to this enforcement point by the issuer. L1 carries no aud; "
+    "the root's restriction still applies to every token below it (step 6c).",
+    [AUD_ROOT, AUD_L1], pop_sign(pop_claims(uuid7ish(0xA0B), AUD_L1, "read_file", {"path": Q3}), WK),
+    "read_file", {"path": Q3}, "PERMIT")
+OTHER_ROOT = jws_sign(root_claims(uuid7ish(0x22), ROOT_TOOLS, ORCH, aud="https://other.example.com"), CP)
+OTHER_L1 = jws_sign(derived_claims(uuid7ish(0x23), OTHER_ROOT, ORCH, WK, L1_TOOLS, IAT_ROOT + 60, 1704069000, 2), ORCH)
+add("J.6.9", "Root aud names another enforcement point", None,
+    "Same as J.6.8 with the root's aud set to https://other.example.com. The chain is valid but was not "
+    "issued for this enforcement point; the presentation audience on the PoP does not override the chain (step 6c).",
+    [OTHER_ROOT, OTHER_L1], pop_sign(pop_claims(uuid7ish(0xA0C), OTHER_L1, "read_file", {"path": Q3}), WK),
+    "read_file", {"path": Q3}, "DENY", "6c")
+add("J.6.10", "Chain audience required, no token carries aud", None,
+    "Same chain as J.3, which carries no aud anywhere; this enforcement point's policy requires chain audience "
+    "restriction (step 6c, last sentence).",
+    [L0, L1, L2], POP3, "read_file", {"path": Q3}, "DENY", "6c", policy={"require_chain_aud": True})
+
 # --- J.7 explicit typing (-02 proposal, RFC 8725 §3.11) ----------------------
 add("J.7.1", "PoP JWT missing typ", None,
-    "PoP is otherwise valid but its header is {\"alg\":\"EdDSA\"} with no typ.",
-    [L0, L1, L2], pop_sign(pop_claims(uuid7ish(0xAE1), L2, "read_file", {"path": Q3}), WK2, header={"alg": "EdDSA"}),
+    "PoP is otherwise valid but its header is {\"alg\":\"Ed25519\"} with no typ.",
+    [L0, L1, L2], pop_sign(pop_claims(uuid7ish(0xAE1), L2, "read_file", {"path": Q3}), WK2, header={"alg": "Ed25519"}),
     "read_file", {"path": Q3}, "DENY", "7a")
 add("J.7.2", "AAT presented where a PoP is expected (type confusion)", None,
     "The PoP slot carries a token with typ aat+jwt, signed by Worker2 with aat_* claims present. "
@@ -609,11 +835,18 @@ add("J.7.3", "AAT with typ aat-pop+jwt in the chain", None,
     [j73_root],
     pop_sign(pop_claims(uuid7ish(0xAE3), j73_root, "read_file", {"path": Q3}), ORCH),
     "read_file", {"path": Q3}, "DENY", "3a")
-j74_root = jws_sign(root_claims(uuid7ish(0x7F), ROOT_TOOLS, ORCH), CP, header={"alg": "EdDSA"})
+j74_root = jws_sign(root_claims(uuid7ish(0x7F), ROOT_TOOLS, ORCH), CP, header={"alg": "Ed25519"})
 add("J.7.4", "AAT missing typ", None,
-    "Root is otherwise valid but its header is {\"alg\":\"EdDSA\"} with no typ.",
+    "Root is otherwise valid but its header is {\"alg\":\"Ed25519\"} with no typ.",
     [j74_root],
     pop_sign(pop_claims(uuid7ish(0xAE4), j74_root, "read_file", {"path": Q3}), ORCH),
+    "read_file", {"path": Q3}, "DENY", "3a")
+j75_root = jws_sign(root_claims(uuid7ish(0x80), ROOT_TOOLS, ORCH), CP, header={"alg": "EdDSA", "typ": "aat+jwt"})
+add("J.7.5", "AAT with the deprecated polymorphic alg EdDSA", None,
+    "Root is typed aat+jwt and signed with the Control Plane Ed25519 key, but its header names "
+    "alg EdDSA, which RFC 9864 deprecates in favour of Ed25519 (Section 9.13).",
+    [j75_root],
+    pop_sign(pop_claims(uuid7ish(0xAE5), j75_root, "read_file", {"path": Q3}), ORCH),
     "read_file", {"path": Q3}, "DENY", "3a")
 
 # --- J.4 I1 violation (twin of A.4) ------------------------------------------
@@ -732,9 +965,25 @@ none_root.update({"header": {"alg": "none"}, "header_b64": none_hdr, "signature_
                   "signing_input_sha256_b64u": b64u(hashlib.sha256(f"{none_hdr}.{L0['payload_b64']}".encode()).digest()),
                   "signer": "(unsigned)"})
 add("J.14.b", "alg: none rejected unconditionally", "A.14",
-    "Same payload as the J.3 root with header {\"alg\":\"none\"} and an empty signature (§8.13).",
+    "Same payload as the J.3 root with header {\"alg\":\"none\"} and an empty signature (§9.13).",
     [none_root], pop_sign(pop_claims(uuid7ish(0xAA2), none_root, "read_file", {"path": Q3}), ORCH),
     "read_file", {"path": Q3}, "DENY", "3a")
+crit_root = jws_sign(root_claims(uuid7ish(0x82), ROOT_TOOLS, ORCH), CP,
+                     header={"alg": "Ed25519", "typ": "aat+jwt", "crit": ["urn:example:unknown"],
+                             "urn:example:unknown": True})
+add("J.7.6", "crit lists a header parameter the enforcement point does not understand", None,
+    "Root is correctly typed and signed by the root issuer, but its crit header names an extension "
+    "parameter the enforcement point does not understand (RFC 7515 Section 4.1.11, step 3a).",
+    [crit_root], pop_sign(pop_claims(uuid7ish(0xAE6), crit_root, "read_file", {"path": Q3}), ORCH),
+    "read_file", {"path": Q3}, "DENY", "3a")
+hdr_key_root = jws_sign(root_claims(uuid7ish(0x81), ROOT_TOOLS, ORCH), ATK,
+                        header={"alg": "Ed25519", "typ": "aat+jwt", "jwk": ATK.jwk})
+add("J.14.c", "Header-supplied key is not used", None,
+    "Root signed by the Attacker, whose public key is embedded in the JWS header as jwk. Keys come only "
+    "from trust anchors or cnf.jwk (Section 3.5), so the signature is checked against the root issuer's "
+    "key and fails.",
+    [hdr_key_root], pop_sign(pop_claims(uuid7ish(0xAA3), hdr_key_root, "read_file", {"path": Q3}), ORCH),
+    "read_file", {"path": Q3}, "DENY", "3b")
 
 # --- J.20 PoP failures (twin of A.20) ----------------------------------------
 add("J.20.1", "PoP signed by the wrong holder key", "A.20.1",
@@ -765,6 +1014,17 @@ add("J.20.6", "PoP aat_tool does not match the invocation tool", "A.20",
     [L0, L1], pop_sign(pop_claims(uuid7ish(0xAB6), L1, "read_file",
                                  {"query": "public filings", "limit": 5}), WK),
     "search_index", {"query": "public filings", "limit": 5}, "DENY", "7e")
+L2_sibling = jws_sign({**derived_claims(uuid7ish(0x12), L1, WK, WK2, L2_TOOLS, IAT_ROOT + 120, 1704068400, 2),
+                       "exp": 1704068700}, WK)
+add("J.20.7", "PoP replayed on a sibling leaf with the same jti", None,
+    "The Worker re-derives a sibling of the J.3 L2 with the same jti and holder but a different exp, and "
+    "presents it with the PoP Worker2 made for L2. aat_id matches; aat_hash does not (step 7c).",
+    [L0, L1, L2_sibling], POP3, "read_file", {"path": Q3}, "DENY", "7c")
+no_hta = {k: v for k, v in pop_claims(uuid7ish(0xAB8), L2, "read_file", {"path": Q3}).items() if k != "hta"}
+add("J.20.8", "PoP without hta", None,
+    "Valid J.3 chain; the PoP omits hta. Step 7c requires hta to be present and an object, so an "
+    "implementation cannot default it to {}.",
+    [L0, L1, L2], pop_sign(no_hta, WK2), "read_file", {"path": Q3}, "DENY", "7c")
 
 # --- J.9 closed-world enforcement at the leaf (§3.3, step 6b) ----------------
 add("J.9.1", "Closed-world: unconstrained extra argument", None,
@@ -853,8 +1113,9 @@ composite("J.16.1", "any: derived removes alternatives", "format: any[pdf, csv, 
           {"export": {"format": ANY(ex("pdf"), ex("csv")), "limit": ALL(rng(max=100), rng(min=0))}}, "PERMIT", n=7)
 composite("J.16.2", "any: derived adds an alternative", "format: any[pdf, csv, xlsx] -> any[pdf, docx]. §4.5 example.",
           {"export": {"format": ANY(ex("pdf"), ex("docx")), "limit": ALL(rng(max=100), rng(min=0))}}, "DENY", "4p4", n=8)
-composite("J.16.3", "any: empty derived any", "format: any[...] -> any[]. §4.5: derived any MUST contain at least one clause.",
-          {"export": {"format": ANY(), "limit": ALL(rng(max=100), rng(min=0))}}, "DENY", "4p4", n=9)
+composite("J.16.3", "any: empty derived any", "format: any[...] -> any[]. §4.5: an empty any is invalid in any "
+          "position; rejected when the child's constraint trees are walked (step 4o).",
+          {"export": {"format": ANY(), "limit": ALL(rng(max=100), rng(min=0))}}, "DENY", "3n/4o", n=9)
 composite("J.16.4", "any: leaf check accepts a listed alternative", "Valid any[pdf, csv]; invocation format csv.",
           {"export": {"format": ANY(ex("pdf"), ex("csv")), "limit": ALL(rng(max=100), rng(min=0))}}, "PERMIT",
           args={"format": "csv", "limit": 10}, n=10)
@@ -875,9 +1136,9 @@ add("J.16.6", "any: cross-type clause subsumption", None,
 EMPTY_ROOT = jws_sign(root_claims(uuid7ish(0xB10), {"read_file": {}}, ORCH), CP)
 empty_child = jws_sign(derived_claims(uuid7ish(0xB11), EMPTY_ROOT, ORCH, WK,
                                      {"read_file": {"path": ex(Q3)}}, IAT_ROOT + 60, 1704069000, 2), ORCH)
-add("J.8.1", "Empty parent map: derived introduces constraint keys (step 4p3)", None,
+add("J.8.1", "Empty parent map: derived introduces constraint keys (step 4p2)", None,
     "Root authorizes read_file with an empty constraint map. L1 introduces path:exact. "
-    "§4.5 / step 4p3 permits adding keys when the parent map is empty.",
+    "§4.5 / step 4p2 permits adding keys when the parent map is empty (an empty map is *).",
     [EMPTY_ROOT, empty_child], pop_sign(pop_claims(uuid7ish(0xB01), empty_child, "read_file", {"path": Q3}), WK),
     "read_file", {"path": Q3}, "PERMIT")
 add("J.8.2", "Empty tool map at the leaf: extra arguments are permitted", None,
@@ -886,11 +1147,49 @@ add("J.8.2", "Empty tool map at the leaf: extra arguments are permitted", None,
     "read_file", {"path": Q3, "mode": "r"}, "PERMIT")
 unk_root = jws_sign(root_claims(uuid7ish(0xB13), {"read_file": {"path": {"constraint_type": "no_such_type"}}}, ORCH), CP)
 add("J.8.3", "Unknown constraint_type is fail-closed at the leaf", "A.9.2",
-    "Root carries path:{constraint_type: no_such_type}. Step 6b denies unrecognized types.",
+    "Root carries path:{constraint_type: no_such_type}. Step 3n rejects constraint types the enforcement "
+    "point does not implement when it walks the root's constraint trees.",
     [unk_root], pop_sign(pop_claims(uuid7ish(0xB03), unk_root, "read_file", {"path": Q3}), ORCH),
-    "read_file", {"path": Q3}, "DENY", "6b",
-    notes=["The draft fixes the outcome, not the step: a verifier that validates constraint types while "
-           "walking the tree at step 3n will report 3n instead of 6b. Both are conformant."])
+    "read_file", {"path": Q3}, "DENY", "3n/4o")
+unk_other = jws_sign(root_claims(uuid7ish(0xB16), {"read_file": {"path": WILD},
+                                                   "export": {"format": {"constraint_type": "no_such_type"}}}, ORCH), CP)
+add("J.8.5", "Unknown constraint_type on a tool that is not invoked", None,
+    "Root authorizes read_file (wildcard path) and export, whose format constraint has an unknown type. "
+    "The invocation is read_file. The chain is still rejected at step 3n: the unknown type is found when "
+    "the root's constraint trees are walked, not only when the constrained tool is invoked.",
+    [unk_other], pop_sign(pop_claims(uuid7ish(0xB05), unk_other, "read_file", {"path": Q3}), ORCH),
+    "read_file", {"path": Q3}, "DENY", "3n/4o")
+bad_range = jws_sign(root_claims(uuid7ish(0xB17), {"read_file": {"path": WILD},
+                                                   "export": {"limit": {"constraint_type": "range", "min": 10, "max": 5}}},
+                                 ORCH), CP)
+add("J.8.6", "Malformed range (min greater than max)", None,
+    "Root carries export.limit = range(min 10, max 5), which is not well-formed (Section 3.4). The invocation "
+    "is read_file; the chain is rejected at step 3n.",
+    [bad_range], pop_sign(pop_claims(uuid7ish(0xB06), bad_range, "read_file", {"path": Q3}), ORCH),
+    "read_file", {"path": Q3}, "DENY", "3n/4o")
+BIG = 2**53 + 1
+big_root = jws_sign(root_claims(uuid7ish(0xB18), {"get_account": {"id": WILD}}, ORCH), CP)
+add("J.8.7", "Argument number that does not survive the JCS round trip", None,
+    "Root authorizes get_account with a wildcard id. The invocation passes id = 2^53 + 1, whose double is "
+    "2^53, so it is not admissible (Section 3.4). Denied at step 6b.",
+    [big_root], pop_sign(pop_claims(uuid7ish(0xB07), big_root, "get_account", {"id": BIG}), ORCH),
+    "get_account", {"id": BIG}, "DENY", "6b",
+    notes=["The PoP payload carries the exact decimal digits of 2^53 + 1. A JCS implementation would "
+           "serialize the value as 9007199254740992; the verdict does not depend on it, because step 6b "
+           "denies before the PoP is compared."])
+add("J.8.8", "Argument above 2^53 that survives the JCS round trip", None,
+    "The invocation passes id = 2^53 + 2, which a double represents exactly, so its JCS form is the same "
+    "number and it is admissible. PERMIT: the rule is the round trip, not a magnitude limit.",
+    [big_root], pop_sign(pop_claims(uuid7ish(0xB08), big_root, "get_account", {"id": 2**53 + 2}), ORCH),
+    "get_account", {"id": 2**53 + 2}, "PERMIT")
+big_lit = jws_sign(root_claims(uuid7ish(0xB19), {"read_file": {"path": WILD},
+                                                 "get_account": {"id": {"constraint_type": "range", "max": BIG}}},
+                               ORCH), CP)
+add("J.8.9", "Constraint literal that does not survive the JCS round trip", None,
+    "Root carries get_account.id = range(max 2^53 + 1). The invocation is read_file, but the chain is "
+    "rejected at step 3n: constraint values are checked when the chain is verified, not only when used.",
+    [big_lit], pop_sign(pop_claims(uuid7ish(0xB09), big_lit, "read_file", {"path": Q3}), ORCH),
+    "read_file", {"path": Q3}, "DENY", "3n/4o")
 FLAT_ROOT = jws_sign(root_claims(uuid7ish(0xB14), {"export": {"limit": ALL(rng(min=0), rng(max=100))}}, ORCH), CP)
 flat_child = jws_sign(derived_claims(uuid7ish(0xB15), FLAT_ROOT, ORCH, WK,
                                     {"export": {"limit": rng(min=10, max=50)}}, IAT_ROOT + 60, 1704069000, 2), ORCH)
@@ -1047,6 +1346,146 @@ add("J.21.5", "Root lifetime exceeds MAX_TOKEN_LIFETIME", None,
     "exp = iat + 90 days + 1 (step 3h).",
     [long_root], pop_sign(pop_claims(uuid7ish(0xE85), long_root, "read_file", {"path": Q3}), ORCH),
     "read_file", {"path": Q3}, "DENY", "3h")
+no_tools = jws_sign({**root_claims(uuid7ish(0xE7F), {}, ORCH),
+                     "authorization_details": [{"type": "attenuating_agent_token"}]}, CP)
+add("J.21.8", "AAT entry without a tools member", None,
+    "The root's attenuating_agent_token entry has no tools member (step 3m).",
+    [no_tools], pop_sign(pop_claims(uuid7ish(0xE8F), no_tools, "read_file", {"path": Q3}), ORCH),
+    "read_file", {"path": Q3}, "DENY", "3m")
+bool_depth = jws_sign(root_claims(uuid7ish(0xE7E), {"read_file": {"path": WILD}}, ORCH, del_depth=False), CP)
+add("J.21.9", "Root del_depth is false rather than the integer 0", None,
+    "del_depth must be an integer (Section 3.2); false is not 0 (step 3c).",
+    [bool_depth], pop_sign(pop_claims(uuid7ish(0xE8E), bool_depth, "read_file", {"path": Q3}), ORCH),
+    "read_file", {"path": Q3}, "DENY", "3c")
+iss_root = jws_sign(root_claims(uuid7ish(0xE6), {"read_file": {"path": WILD}}, ORCH,
+                               iss="https://other-issuer.example.com"), CP)
+add("J.21.6", "Root iss does not match the verifying trust anchor", None,
+    "Signed by the Control Plane key, whose trust anchor issuer is https://auth.example.com, but "
+    "iss names a different issuer (step 3k, RFC 8725 Section 3.8).",
+    [iss_root], pop_sign(pop_claims(uuid7ish(0xE86), iss_root, "read_file", {"path": Q3}), ORCH),
+    "read_file", {"path": Q3}, "DENY", "3k")
+empty_all_root = jws_sign(root_claims(uuid7ish(0xE7), {"read_file": {"path": {"constraint_type": "all",
+                                                                              "constraints": []}}}, ORCH), CP)
+add("J.21.7", "Root carries an empty all constraint", None,
+    "Single-token chain whose root constrains path with all([]). An empty conjunction would accept every "
+    "value; it is rejected when the root's constraint trees are walked (step 3n).",
+    [empty_all_root], pop_sign(pop_claims(uuid7ish(0xE87), empty_all_root, "read_file", {"path": Q3}), ORCH),
+    "read_file", {"path": Q3}, "DENY", "3n/4o")
+
+
+# --- J.22 optional and unnamed arguments (§3.3, §4.5, steps 4p and 6b) ---------
+RT = "read_text_file"
+P = "/srv/api/README.md"
+EXP = {"constraint_type": "exact", "value": P}
+
+
+def lines(mx, optional=True):
+    c = {"constraint_type": "range", "max": mx}
+    if optional:
+        c["optional"] = True
+    return c
+
+
+OPEN_MAP = {"path": EXP, "head": lines(200), "tail": lines(200), "*": WILDCARD}
+CLOSED_MAP = {"path": EXP, "head": lines(200)}
+OR = jws_sign(root_claims(uuid7ish(0x2200), {RT: OPEN_MAP}, ORCH), CP)
+CR = jws_sign(root_claims(uuid7ish(0x2201), {RT: CLOSED_MAP}, ORCH), CP)
+
+
+def leaf_case(vid, title, desc, root, args, expect, step=None, n=0):
+    add(vid, title, None, desc, [root],
+        pop_sign(pop_claims(uuid7ish(0x2280 + n), root, RT, args), ORCH), RT, args, expect, step)
+
+
+def derive_case(vid, title, desc, root, child_map, args, expect, step=None, n=0):
+    d = jws_sign(derived_claims(uuid7ish(0x2240 + n), root, ORCH, WK, {RT: child_map},
+                                IAT_ROOT + 60, 1704069000, 2), ORCH)
+    add(vid, title, None, desc, [root, d],
+        pop_sign(pop_claims(uuid7ish(0x22C0 + n), d, RT, args), WK), RT, args, expect, step)
+
+
+leaf_case("J.22.1", "Optional arguments may be omitted",
+          "path is required; head and tail are optional; the invocation carries only path.",
+          OR, {"path": P}, "PERMIT", n=1)
+leaf_case("J.22.2", "A present optional argument is constrained",
+          "head is optional with max 200; the invocation sets head to 100.",
+          OR, {"path": P, "head": 100}, "PERMIT", n=2)
+leaf_case("J.22.3", "A present optional argument that violates its constraint",
+          "head is optional with max 200; the invocation sets head to 500.",
+          OR, {"path": P, "head": 500}, "DENY", "6b", n=3)
+leaf_case("J.22.4", "The * entry admits an unnamed argument",
+          "The map carries *; the invocation adds encoding, which the map does not name.",
+          OR, {"path": P, "encoding": "utf-8"}, "PERMIT", n=4)
+leaf_case("J.22.5", "A required argument is still required",
+          "path is required; the invocation carries only head.",
+          OR, {"head": 10}, "DENY", "6b", n=5)
+leaf_case("J.22.6", "Without *, an unnamed argument is rejected",
+          "The map has path and optional head but no *; the invocation adds encoding.",
+          CR, {"path": P, "encoding": "utf-8"}, "DENY", "6b", n=6)
+derive_case("J.22.7", "Derived token makes an optional argument required",
+            "Parent head is optional (max 200); child head is required (max 100). Required narrows.",
+            CR, {"path": EXP, "head": lines(100, optional=False)}, {"path": P, "head": 50}, "PERMIT", n=7)
+derive_case("J.22.8", "Derived token makes a required argument optional",
+            "Parent path is required; child marks it optional, admitting invocations that omit it.",
+            CR, {"path": {**EXP, "optional": True}, "head": lines(200)}, {"path": P}, "DENY", "4p3", n=8)
+derive_case("J.22.9", "Derived token omits an optional argument, which forbids it",
+            "Parent head is optional and the parent has no *; child omits head. The chain is valid, and "
+            "an invocation that carries head is now rejected as unnamed.",
+            CR, {"path": EXP}, {"path": P, "head": 10}, "DENY", "6b", n=9)
+derive_case("J.22.10", "Derived token omits an optional argument; invocation without it",
+            "Same derivation as J.22.9; the invocation carries only path.",
+            CR, {"path": EXP}, {"path": P}, "PERMIT", n=10)
+derive_case("J.22.11", "Derived token omits a required argument",
+            "Parent path is required; the child omits it.",
+            CR, {"head": lines(200)}, {"head": 10}, "DENY", "4p2", n=11)
+derive_case("J.22.12", "Derived token constrains an argument the parent admitted via *",
+            "Parent has *; child keeps * and adds encoding = exact utf-8. The invocation passes latin-1.",
+            OR, {**OPEN_MAP, "encoding": {"constraint_type": "exact", "value": "utf-8"}},
+            {"path": P, "encoding": "latin-1"}, "DENY", "6b", n=12)
+derive_case("J.22.13", "Derived token constrains an argument the parent admitted via *; value allowed",
+            "Same derivation as J.22.12; the invocation passes utf-8.",
+            OR, {**OPEN_MAP, "encoding": {"constraint_type": "exact", "value": "utf-8"}},
+            {"path": P, "encoding": "utf-8"}, "PERMIT", n=13)
+derive_case("J.22.14", "Derived token adds * when the parent has none",
+            "Parent map has no *; the child adds one, admitting arguments the parent forbids.",
+            CR, {**CLOSED_MAP, "*": WILDCARD}, {"path": P}, "DENY", "4p2", n=14)
+derive_case("J.22.15", "Derived token names an argument the parent neither names nor admits",
+            "Parent map has no *; the child adds encoding.",
+            CR, {**CLOSED_MAP, "encoding": WILDCARD}, {"path": P}, "DENY", "4p2", n=15)
+derive_case("J.22.16", "Derived token omits an optional argument but keeps *",
+            "Parent has * and optional head; the child omits head and keeps *, so head would come back "
+            "under * with any value.",
+            OR, {"path": EXP, "tail": lines(200), "*": WILDCARD}, {"path": P}, "DENY", "4p2", n=16)
+EMPTY_RT = jws_sign(root_claims(uuid7ish(0x2202), {RT: {}}, ORCH), CP)
+derive_case("J.22.17", "Empty parent map is equivalent to *",
+            "Parent map is empty; the child pins path and keeps *. Normalization treats the parent as {*: wildcard}.",
+            EMPTY_RT, {"path": EXP, "*": WILDCARD}, {"path": P, "head": 5}, "PERMIT", n=17)
+BAD_NEST = jws_sign(root_claims(uuid7ish(0x2203), {RT: {"path": {"constraint_type": "all", "constraints": [
+    {**EXP, "optional": True}]}}}, ORCH), CP)
+leaf_case("J.22.18", "optional inside all is not well-formed",
+          "The optional member may appear only on a top-level constraint-map entry.",
+          BAD_NEST, {"path": P}, "DENY", "3n/4o", n=18)
+derive_case("J.22.20", "Derived token names a new optional argument under the parent's *",
+            "Parent has *; the child keeps * and adds encoding as an optional exact utf-8. The invocation omits it.",
+            OR, {**OPEN_MAP, "encoding": {"constraint_type": "exact", "value": "utf-8", "optional": True}},
+            {"path": P}, "PERMIT", n=20)
+derive_case("J.22.21", "Derived token drops *",
+            "Parent has *; the child keeps every named key and drops *. An invocation using only named arguments.",
+            OR, {"path": EXP, "head": lines(200), "tail": lines(200)}, {"path": P, "tail": 20}, "PERMIT", n=21)
+derive_case("J.22.22", "Derived token drops *; unnamed argument rejected",
+            "Same derivation as J.22.21; the invocation adds encoding, which the child no longer admits.",
+            OR, {"path": EXP, "head": lines(200), "tail": lines(200)}, {"path": P, "encoding": "utf-8"},
+            "DENY", "6b", n=22)
+BAD_STAR_OPT = jws_sign(root_claims(uuid7ish(0x2205), {RT: {"path": EXP, "*": {**WILDCARD, "optional": True}}},
+                                    ORCH), CP)
+leaf_case("J.22.23", "A * entry carrying optional is not well-formed",
+          "The * entry must be a wildcard constraint without an optional member.",
+          BAD_STAR_OPT, {"path": P}, "DENY", "3n/4o", n=23)
+BAD_STAR = jws_sign(root_claims(uuid7ish(0x2204), {RT: {"path": EXP, "*": {"constraint_type": "range", "max": 5}}},
+                                ORCH), CP)
+leaf_case("J.22.19", "A * entry that is not a wildcard is not well-formed",
+          "In this specification the * entry must be a wildcard constraint.",
+          BAD_STAR, {"path": P}, "DENY", "3n/4o", n=19)
 
 
 # ---------------------------------------------------------------------------
@@ -1070,20 +1509,23 @@ def tok_md(label: str, t: dict) -> str:
 md = []
 md.append("# AAT JWS Test Vectors (draft-niyikiza-oauth-attenuating-agent-tokens-02)\n")
 md.append("**Status:** generated by `gen_vectors.py`, do not edit by hand; "
-          "every expected verdict below was reproduced by the independent §7 verifier in that file. "
+          "every expected verdict below was reproduced by the independent §8 verifier in that file. "
           "These vectors are for the -02 text. A draft-01 implementation will disagree on `typ`, "
-          "required `aat_aud`, and `all` clause-reuse (`J.15.3`, `J.15.4`).\n")
+          "audience mismatch handling (`J.6.2`, `J.6.4`), and `all` clause-reuse (`J.15.3`, `J.15.4`).\n")
 md.append("## Conventions\n")
-md.append("- Signature algorithm: Ed25519, JWS `alg` = `EdDSA`.")
+md.append("- Signature algorithm: Ed25519, JWS `alg` = `Ed25519` (RFC 9864).")
 md.append("- **Explicit typing.** AAT header carries `typ` = `aat+jwt` and PoP header carries `typ` = `aat-pop+jwt` "
           "(RFC 8725 §3.11, cf. DPoP `dpop+jwt`). Verifiers reject a missing or mismatched `typ` at the header step "
           "(3a, 4a, 7a). Draft-01 defines no `typ`.")
-md.append("- **Audience.** `aat_aud` is REQUIRED in the PoP and MUST match a configured audience. "
-          "Draft-01 leaves this to deployment policy.")
+md.append("- **Audience and nonce.** `aat_aud` is OPTIONAL in the PoP; when present it MUST identify the receiving "
+          "enforcement point (step 7d). AATs MAY carry `aud`, checked for every token in the chain (step 6c). "
+          "PoP JWTs MAY carry an enforcement-point `nonce` (step 7h). Each vector states which of these its "
+          "enforcement point requires under **Policy**. Draft-01 leaves audience to deployment policy without "
+          "defining the value.")
 md.append("- **`all` subsumption.** Every parent clause must be subsumed by at least one derived clause; "
           "a derived clause MAY cover several parent clauses; extra derived clauses are permitted. Draft-01's one-to-one "
           "assignment is dropped (it adds backtracking without adding soundness).")
-md.append("- AAT payloads are JCS-canonical (RFC 8785). The draft requires JCS only for the PoP payload (§5.2). "
+md.append("- AAT payloads are JCS-canonical (RFC 8785). The draft requires JCS only for the PoP payload (§7.2). "
           "Canonicalizing AAT payloads is a vector choice so the signing input is reproducible; a verifier MUST "
           "verify the presented bytes and MUST NOT re-canonicalize before checking a signature.")
 md.append("- `par_hash` = base64url-nopad(SHA-256(parent JWS Signing Input)), where the signing input is the ASCII "
@@ -1102,7 +1544,7 @@ md.append(f"| MAX_DELEGATION_DEPTH | {MAX_DELEGATION_DEPTH} |")
 md.append(f"| MAX_CONSTRAINT_DEPTH | {MAX_CONSTRAINT_DEPTH} |")
 md.append(f"| PoP clock window | ±{POP_WINDOW} s |")
 md.append(f"| Required PoP audience | `{AUDIENCE}` (deployment policy for these vectors) |")
-md.append(f"| Trust anchors | Control Plane public key only |")
+md.append(f"| Trust anchors | Control Plane public key, bound to issuer `https://auth.example.com` |")
 md.append("")
 md.append("## Key material\n")
 md.append("Same seeds as `docs/spec/test-vectors.md`.\n")
@@ -1130,6 +1572,8 @@ for v in VECTORS:
     if v["cbor_twin"]:
         md.append(f"CBOR twin: {v['cbor_twin']}.  ")
     md.append(v["description"] + "\n")
+    if v["policy"]:
+        md.append("**Policy:** " + ", ".join(f"`{k}`=`{val}`" for k, val in v["policy"].items()) + "\n")
     for n in v["notes"]:
         md.append(f"> {n}\n")
     md.append(f"**Invocation:** tool `{v['tool']}`, args `{jcs(v['args']).decode()}`, now = `{v['verification_time']}`  ")
@@ -1152,7 +1596,9 @@ json_out = {
     "conventions": {
         "header": HEADER, "pop_header": POP_HEADER,
         "aat_payload_jcs": True, "pop_payload_jcs": True,
-        "aat_aud_required": True,
+        "aat_aud": "optional; when present it must identify the enforcement point (7d)",
+        "chain_aud": "every chain token that carries aud must identify the enforcement point (6c)",
+        "pop_nonce": "checked when the vector policy names the nonce the enforcement point issued (7h)",
         "all_subsumption": "every parent clause subsumed by at least one derived clause; reuse permitted",
         "par_hash": "base64url-nopad(SHA-256(parent JWS Signing Input))",
     },
@@ -1160,12 +1606,15 @@ json_out = {
                "max_delegation_depth": MAX_DELEGATION_DEPTH, "pop_window": POP_WINDOW, "audience": AUDIENCE},
     "keys": {n: {"seed_hex": k.seed.hex(), "public_hex": k.pub_raw.hex(), "jwk": k.jwk,
                  "thumbprint": k.thumbprint, "thumbprint_uri": k.thumbprint_uri} for n, k in KEYS.items()},
-    "trust_anchors": [CP.jwk],
+    "trust_anchors": [{"iss": ROOT_ISS, "jwk": CP.jwk}],
     "vectors": [{
         "id": v["id"], "title": v["title"], "cbor_twin": v["cbor_twin"], "description": v["description"],
         "notes": v["notes"], "now": v["verification_time"], "tool": v["tool"], "args": v["args"],
+        "policy": v["policy"],
         "chain": [tok_json(t) for t in v["chain"]], "chain_compact": [t["compact"] for t in v["chain"]],
-        "pop": tok_json(v["pop"]), "expected": v["expected"],
+        "pop": tok_json(v["pop"]),
+        "presentation": {"aat_chain": [t["compact"] for t in v["chain"]], "aat_pop": v["pop"]["compact"]},
+        "expected": v["expected"],
     } for v in VECTORS],
 }
 ARGS.json_out.write_text(json.dumps(json_out, indent=2) + "\n")

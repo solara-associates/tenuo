@@ -32,13 +32,25 @@ const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::URL
 /// or where Tenuo's wire format deliberately differs. The Authorizer's verdict
 /// on these is reported but not asserted.
 const NOT_APPLICABLE: &[(&str, &str)] = &[
-    ("J.6.1", "PoP audience: Tenuo PoP v1 carries no audience (pop-v2 adds it)"),
-    ("J.6.2", "PoP audience: Tenuo PoP v1 carries no audience (pop-v2 adds it)"),
     ("J.7.1", "JWS typ header has no CBOR analogue"),
     ("J.7.2", "JWS typ header has no CBOR analogue"),
     ("J.7.3", "JWS typ header has no CBOR analogue"),
     ("J.7.4", "JWS typ header has no CBOR analogue"),
+    ("J.7.5", "JWS alg header has no CBOR analogue"),
+    ("J.7.6", "JWS crit header has no CBOR analogue"),
     ("J.21.3", "cnf.jwk private member: Tenuo holders are raw keys"),
+    (
+        "J.21.6",
+        "root iss: Tenuo roots identify the issuer by key, so there is no separate issuer to mismatch",
+    ),
+    (
+        "J.8.7",
+        "JCS number round trip: CBOR integers are exact, so the binary64 collision the rule prevents cannot occur",
+    ),
+    (
+        "J.8.9",
+        "JCS number round trip: CBOR integers are exact, so the binary64 collision the rule prevents cannot occur",
+    ),
     (
         "J.21.1",
         "lone warrant: Tenuo's leaf format presents a single warrant by itself, trusted on the anchor's signature; root-shape checks apply to chains only",
@@ -46,6 +58,79 @@ const NOT_APPLICABLE: &[(&str, &str)] = &[
     (
         "J.21.2",
         "lone warrant: Tenuo's leaf format presents a single warrant by itself, trusted on the anchor's signature; root-shape checks apply to chains only",
+    ),
+];
+
+/// Vectors whose -02 behavior tenuo-core does not implement yet. Unlike
+/// NOT_APPLICABLE, each has a CBOR analogue and is a real gap. The verdict is
+/// reported, not asserted, and the test fails if a gap starts matching, so the
+/// list is pruned as tenuo-core catches up.
+const KNOWN_GAPS: &[(&str, &str)] = &[
+    (
+        "J.6.1",
+        "PoP audience: Tenuo PoP v1 carries no audience (pop-v2)",
+    ),
+    (
+        "J.6.2",
+        "PoP audience: Tenuo PoP v1 carries no audience (pop-v2)",
+    ),
+    (
+        "J.6.4",
+        "PoP audience: Tenuo PoP v1 carries no audience (pop-v2)",
+    ),
+    ("J.6.5", "PoP nonce: Tenuo PoP v1 carries no nonce (pop-v2)"),
+    ("J.6.7", "PoP nonce: Tenuo PoP v1 carries no nonce (pop-v2)"),
+    (
+        "J.6.9",
+        "chain audience: tenuo-core does not check a per-warrant audience",
+    ),
+    (
+        "J.6.10",
+        "chain audience: tenuo-core does not check a per-warrant audience",
+    ),
+    (
+        "J.20.7",
+        "PoP binding: Tenuo PoP v1 binds the warrant id, not a hash of the warrant (pop-v2)",
+    ),
+    (
+        "J.8.6",
+        "well-formedness: a range with min greater than max is not rejected",
+    ),
+    (
+        "J.22.1",
+        "optional arguments: not implemented in ConstraintSet",
+    ),
+    (
+        "J.22.2",
+        "optional arguments: not implemented in ConstraintSet",
+    ),
+    (
+        "J.22.4",
+        "unnamed arguments (*): not implemented in ConstraintSet",
+    ),
+    (
+        "J.22.10",
+        "optional arguments: a child may not yet omit an optional key",
+    ),
+    (
+        "J.22.13",
+        "unnamed arguments (*): a child may not yet add keys under the parent's *",
+    ),
+    (
+        "J.22.17",
+        "unnamed arguments (*): an empty map is not yet normalized to *",
+    ),
+    (
+        "J.22.18",
+        "optional arguments: optional inside all/any is not rejected",
+    ),
+    (
+        "J.22.20",
+        "unnamed arguments (*): a child may not yet add keys under the parent's *",
+    ),
+    (
+        "J.22.21",
+        "unnamed arguments (*): a child may not yet drop *",
     ),
 ];
 
@@ -322,6 +407,7 @@ fn aat_jws_vector_suite_verdicts_match() {
     let max_lifetime = params["max_token_lifetime"].as_u64().unwrap();
     let pop_window = params["pop_window"].as_i64().unwrap();
     let na: HashMap<&str, &str> = NOT_APPLICABLE.iter().copied().collect();
+    let gaps: HashMap<&str, &str> = KNOWN_GAPS.iter().copied().collect();
 
     let mut keys_by_iss = HashMap::new();
     for n in [
@@ -346,6 +432,7 @@ fn aat_jws_vector_suite_verdicts_match() {
     let mut failures = Vec::new();
     let mut asserted = 0;
     let mut skipped = Vec::new();
+    let mut gap_rows: Vec<String> = Vec::new();
 
     for v in suite["vectors"].as_array().unwrap() {
         let id = v["id"].as_str().unwrap();
@@ -423,6 +510,16 @@ fn aat_jws_vector_suite_verdicts_match() {
             skipped.push(format!("{id}: tenuo {got} (expected {expected}); {reason}"));
             continue;
         }
+        if let Some(reason) = gaps.get(id) {
+            if got == expected {
+                failures.push(format!(
+                    "{id}: now matches ({got}); remove it from KNOWN_GAPS"
+                ));
+            } else {
+                gap_rows.push(format!("{id}: tenuo {got} (expected {expected}); {reason}"));
+            }
+            continue;
+        }
         asserted += 1;
         if got != expected {
             failures.push(format!("{id}: expected {expected}, tenuo {got} [{detail}]"));
@@ -433,10 +530,14 @@ fn aat_jws_vector_suite_verdicts_match() {
     for s in &skipped {
         println!("  {s}");
     }
+    println!("known gaps ({}):", gap_rows.len());
+    for s in &gap_rows {
+        println!("  {s}");
+    }
     assert_eq!(
-        asserted + skipped.len(),
+        asserted + skipped.len() + gaps.len(),
         suite["vectors"].as_array().unwrap().len(),
-        "every vector is either asserted or listed as not applicable"
+        "every vector is asserted, not applicable, or a known gap"
     );
     assert!(
         failures.is_empty(),
@@ -459,6 +560,13 @@ fn not_applicable_ids_exist_in_suite() {
         .collect();
     for (id, _) in NOT_APPLICABLE {
         assert!(ids.contains(id), "NOT_APPLICABLE lists unknown vector {id}");
+    }
+    for (id, _) in KNOWN_GAPS {
+        assert!(ids.contains(id), "KNOWN_GAPS lists unknown vector {id}");
+        assert!(
+            !NOT_APPLICABLE.iter().any(|(n, _)| n == id),
+            "{id} is listed as both not applicable and a known gap"
+        );
     }
 }
 

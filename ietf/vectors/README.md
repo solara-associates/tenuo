@@ -9,7 +9,7 @@ same key seeds, same timestamps, matching scenario ids.
 |---|---|
 | `gen_vectors.py` | Generator. Builds every vector and re-verifies it with an independent §8 implementation before writing. |
 | `aat-jws-vectors.md` | Human-readable rendering of the suite, kept next to the draft. |
-| [`../../tests/vectors/aat-jws-vectors.json`](../../tests/vectors/aat-jws-vectors.json) | Machine-readable suite: 114 vectors with expected verdict and cited §8 step. The verdict is normative; the step follows §8's order and can differ where §8 permits reordering, so harnesses compare verdicts. Each vector also carries its `presentation` object (§7.4: `aat_chain`, `aat_pop`). Lives with the other cross-language vectors; `tenuo-core/tests/aat_conformance.rs` compiles it in with `include_str!`. |
+| [`../../tests/vectors/aat-jws-vectors.json`](../../tests/vectors/aat-jws-vectors.json) | Machine-readable suite: 115 vectors with expected verdict and cited §8 step. The verdict is normative; the step follows §8's order and can differ where §8 permits reordering, so harnesses compare verdicts. Each vector also carries its `presentation` object (§7.4: `aat_chain`, `aat_pop`). Lives with the other cross-language vectors; `tenuo-core/tests/aat_conformance.rs` compiles it in with `include_str!`. |
 
 Both output files are generated. Do not edit them by hand; change the generator
 and regenerate.
@@ -39,8 +39,9 @@ checks of §8 steps 3c, 3d, 3f, 3h, 3k, 3l, 3m, 3n.
 
 - AAT payloads are JCS-canonical so the signing input is reproducible; a
   verifier must verify the presented bytes and never re-canonicalize.
-- No floats and no non-ASCII strings appear anywhere. Numeric canonicalization
-  and Unicode tool-name matching need their own vector sets once the -02 text
-  on those points is final.
+- No floats and no non-ASCII strings appear anywhere. Number admissibility
+  (§3.4) is covered by `J.8.7`-`J.8.9`; a harness must read those numbers as
+  written, since a parser that converts them to doubles cannot detect the lost
+  digits. Unicode tool-name matching needs its own vector set.
 - Draft-01 implementations will disagree on `typ`, audience mismatch handling, and the
   two `all` clause-reuse cases (`J.15.3`, `J.15.4`). Those encode -02 changes.

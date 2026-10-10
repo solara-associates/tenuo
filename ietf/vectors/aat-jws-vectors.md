@@ -12,7 +12,7 @@
 - `par_hash` = base64url-nopad(SHA-256(parent JWS Signing Input)), where the signing input is the ASCII string `BASE64URL(header) || '.' || BASE64URL(payload)` (§4.6). J.12.b shows the wrong (payload-only) form.
 - Derived `iss` = `urn:ietf:params:oauth:jwk-thumbprint:sha-256:<RFC 7638 thumbprint of the signing key>`.
 - `jti` values follow the CBOR vector IDs: `tnu_wrt_019471f8...0001` becomes `019471f8-0000-7000-8000-000000000001`.
-- No floats, no non-ASCII strings, no escaped characters appear anywhere. That keeps JCS trivially portable and sidesteps the binary64 canonicalization issue (Warden NOTES entry 7), which needs its own vectors.
+- No floats, no non-ASCII strings, no escaped characters appear anywhere. That keeps JCS trivially portable. Number admissibility (Section 3.4) is covered by J.8.7-J.8.9; a harness must read those numbers as written, since a parser that converts them to doubles cannot detect the lost digits.
 
 ## Verification parameters
 
@@ -146,6 +146,7 @@ Thumbprint URIs used as derived-token `iss`:
 | J.21.8 | AAT entry without a tools member | — | DENY at step 3m |
 | J.21.10 | A tools value that is not a constraint-map object | — | DENY at step 3m |
 | J.21.11 | all whose constraints member is not an array | — | DENY at step 3n/4o |
+| J.21.12 | range with an undefined member | — | DENY at step 3n/4o |
 | J.21.9 | Root del_depth is false rather than the integer 0 | — | DENY at step 3c |
 | J.21.6 | Root iss does not match the verifying trust anchor | — | DENY at step 3k |
 | J.21.7 | Root carries an empty all constraint | — | DENY at step 3n/4o |
@@ -3394,7 +3395,7 @@ eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWF0LXBvcCtqd3QifQ.eyJhYXRfYXVkIjoiaHR0cHM6Ly90b
 
 ## J.7.5 AAT with the deprecated polymorphic alg EdDSA
 
-Root is typed aat+jwt and signed with the Control Plane Ed25519 key, but its header names alg EdDSA, which RFC 9864 deprecates in favour of Ed25519 (Section 9.13).
+Root is typed aat+jwt and signed with the Control Plane Ed25519 key, but its header names alg EdDSA, which RFC 9864 deprecates in favour of Ed25519 (Section 9.12).
 
 **Invocation:** tool `read_file`, args `{"path":"/data/q3-report.pdf"}`, now = `1704067500`  
 **Expected:** **DENY** at step 3a
@@ -5143,7 +5144,7 @@ eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWF0LXBvcCtqd3QifQ.eyJhYXRfYXVkIjoiaHR0cHM6Ly90b
 ## J.11.c I4 violation: constraint key dropped from a closed-world map
 
 CBOR twin: A.11.  
-L1 drops search_index.limit. §4.5 requires the exact same key set when the parent map is non-empty.
+L1 drops search_index.limit, which the parent requires; a required key stays required (§4.5, step 4p2).
 
 **Invocation:** tool `read_file`, args `{"path":"/data/q3-report.pdf"}`, now = `1704067500`  
 **Expected:** **DENY** at step 4p2
@@ -6309,7 +6310,7 @@ eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWF0LXBvcCtqd3QifQ.eyJhYXRfYXVkIjoiaHR0cHM6Ly90b
 ## J.14.b alg: none rejected unconditionally
 
 CBOR twin: A.14.  
-Same payload as the J.3 root with header {"alg":"none"} and an empty signature (§9.13).
+Same payload as the J.3 root with header {"alg":"none"} and an empty signature (§9.12).
 
 **Invocation:** tool `read_file`, args `{"path":"/data/q3-report.pdf"}`, now = `1704067500`  
 **Expected:** **DENY** at step 3a
@@ -11835,7 +11836,7 @@ eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWF0LXBvcCtqd3QifQ.eyJhYXRfYXVkIjoiaHR0cHM6Ly90b
 
 ## J.8.2 Empty tool map at the leaf: extra arguments are permitted
 
-Root = leaf, read_file has an empty constraint map. Closed-world mode is off, so extra args PERMIT.
+Root = leaf, read_file has an empty constraint map. An empty map is {"*": wildcard}, so extra args PERMIT.
 
 **Invocation:** tool `read_file`, args `{"mode":"r","path":"/data/q3-report.pdf"}`, now = `1704067500`  
 **Expected:** **PERMIT**
@@ -15476,6 +15477,108 @@ Pretty payload:
 Compact JWS:
 ```
 eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWF0LXBvcCtqd3QifQ.eyJhYXRfYXVkIjoiaHR0cHM6Ly90b29scy5leGFtcGxlLmNvbSIsImFhdF9oYXNoIjoiazc0MkNFZHJMM2VCMy01c2RiLTdxbFlQZERwOThZcFJxUXN4VFdUWnJoZyIsImFhdF9pZCI6IjAxOTQ3MWY4LTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMGU3YyIsImFhdF90b29sIjoicmVhZF9maWxlIiwiaHRhIjp7InBhdGgiOiIvZGF0YS9xMy1yZXBvcnQucGRmIn0sImlhdCI6MTcwNDA2NzUwMCwianRpIjoiMDE5NDcxZjgtMDAwMC03MDAwLTgwMDAtMDAwMDAwMDAwZThjIn0.aHhLwgSNL9U78bYcdZlZ9iyrjIs4caxh1gO1LxAihUnTH_v5dGUQbOl1WQve2VpVvxL6Obt7t-CdI9mw3dUkDQ
+```
+
+---
+
+## J.21.12 range with an undefined member
+
+limit is constrained by a range whose bound is spelled maximum instead of max. Read as a range with no bounds, it would admit limit 1000; a member its type does not define makes the constraint not well-formed (step 3n).
+
+**Invocation:** tool `read_file`, args `{"limit":1000,"path":"/data/q3-report.pdf"}`, now = `1704067500`  
+**Expected:** **DENY** at step 3n/4o
+
+**Chain[0] (del_depth 0)** (signed by `control_plane`)
+
+Protected header (JCS):
+```json
+{"alg":"Ed25519","typ":"aat+jwt"}
+```
+Payload (JCS, this exact byte string is what is base64url-encoded):
+```json
+{"authorization_details":[{"tools":{"read_file":{"limit":{"constraint_type":"range","maximum":10},"path":{"constraint_type":"wildcard"}}},"type":"attenuating_agent_token"}],"cnf":{"jwk":{"crv":"Ed25519","kty":"OKP","x":"gTl3Dqh9F19Wo1Rmw0x-zMuNipG07jeiXfYPW4_Js5Q"}},"del_depth":0,"del_max_depth":3,"exp":1704070800,"iat":1704067200,"iss":"https://auth.example.com","jti":"019471f8-0000-7000-8000-000000000e7b"}
+```
+Pretty payload:
+```json
+{
+  "jti": "019471f8-0000-7000-8000-000000000e7b",
+  "iss": "https://auth.example.com",
+  "iat": 1704067200,
+  "exp": 1704070800,
+  "del_depth": 0,
+  "del_max_depth": 3,
+  "cnf": {
+    "jwk": {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "x": "gTl3Dqh9F19Wo1Rmw0x-zMuNipG07jeiXfYPW4_Js5Q"
+    }
+  },
+  "authorization_details": [
+    {
+      "type": "attenuating_agent_token",
+      "tools": {
+        "read_file": {
+          "path": {
+            "constraint_type": "wildcard"
+          },
+          "limit": {
+            "constraint_type": "range",
+            "maximum": 10
+          }
+        }
+      }
+    }
+  ]
+}
+```
+| Field | Value |
+|---|---|
+| header_b64 | `eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWF0K2p3dCJ9` |
+| payload_b64 | `eyJhdXRob3JpemF0aW9uX2RldGFpbHMiOlt7InRvb2xzIjp7InJlYWRfZmlsZSI6eyJsaW1pdCI6eyJjb25zdHJhaW50X3R5cGUiOiJyYW5nZSIsIm1heGltdW0iOjEwfSwicGF0aCI6eyJjb25zdHJhaW50X3R5cGUiOiJ3aWxkY2FyZCJ9fX0sInR5cGUiOiJhdHRlbnVhdGluZ19hZ2VudF90b2tlbiJ9XSwiY25mIjp7Imp3ayI6eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEifX0sImRlbF9kZXB0aCI6MCwiZGVsX21heF9kZXB0aCI6MywiZXhwIjoxNzA0MDcwODAwLCJpYXQiOjE3MDQwNjcyMDAsImlzcyI6Imh0dHBzOi8vYXV0aC5leGFtcGxlLmNvbSIsImp0aSI6IjAxOTQ3MWY4LTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMGU3YiJ9` |
+| SHA-256(signing input), base64url | `SKXQKs90XXeBOJ8KUpzr2CYBDkojnj1h1QHzY8dG8TU` |
+| signature_b64 | `ZD673V1x6ewlQrKFQzjB7wy2ID_qDueWniYGNe3ZL5QsrT6LNUNEXLbpzdCIDYHHXlGZZVvjmOr4cmDPOIHkCA` |
+
+Compact JWS:
+```
+eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWF0K2p3dCJ9.eyJhdXRob3JpemF0aW9uX2RldGFpbHMiOlt7InRvb2xzIjp7InJlYWRfZmlsZSI6eyJsaW1pdCI6eyJjb25zdHJhaW50X3R5cGUiOiJyYW5nZSIsIm1heGltdW0iOjEwfSwicGF0aCI6eyJjb25zdHJhaW50X3R5cGUiOiJ3aWxkY2FyZCJ9fX0sInR5cGUiOiJhdHRlbnVhdGluZ19hZ2VudF90b2tlbiJ9XSwiY25mIjp7Imp3ayI6eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEifX0sImRlbF9kZXB0aCI6MCwiZGVsX21heF9kZXB0aCI6MywiZXhwIjoxNzA0MDcwODAwLCJpYXQiOjE3MDQwNjcyMDAsImlzcyI6Imh0dHBzOi8vYXV0aC5leGFtcGxlLmNvbSIsImp0aSI6IjAxOTQ3MWY4LTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMGU3YiJ9.ZD673V1x6ewlQrKFQzjB7wy2ID_qDueWniYGNe3ZL5QsrT6LNUNEXLbpzdCIDYHHXlGZZVvjmOr4cmDPOIHkCA
+```
+
+**PoP JWT** (signed by `orchestrator`)
+
+Protected header (JCS):
+```json
+{"alg":"Ed25519","typ":"aat-pop+jwt"}
+```
+Payload (JCS, this exact byte string is what is base64url-encoded):
+```json
+{"aat_aud":"https://tools.example.com","aat_hash":"SKXQKs90XXeBOJ8KUpzr2CYBDkojnj1h1QHzY8dG8TU","aat_id":"019471f8-0000-7000-8000-000000000e7b","aat_tool":"read_file","hta":{"limit":1000,"path":"/data/q3-report.pdf"},"iat":1704067500,"jti":"019471f8-0000-7000-8000-000000000e8b"}
+```
+Pretty payload:
+```json
+{
+  "jti": "019471f8-0000-7000-8000-000000000e8b",
+  "iat": 1704067500,
+  "aat_id": "019471f8-0000-7000-8000-000000000e7b",
+  "aat_hash": "SKXQKs90XXeBOJ8KUpzr2CYBDkojnj1h1QHzY8dG8TU",
+  "aat_tool": "read_file",
+  "hta": {
+    "path": "/data/q3-report.pdf",
+    "limit": 1000
+  },
+  "aat_aud": "https://tools.example.com"
+}
+```
+| Field | Value |
+|---|---|
+| header_b64 | `eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWF0LXBvcCtqd3QifQ` |
+| payload_b64 | `eyJhYXRfYXVkIjoiaHR0cHM6Ly90b29scy5leGFtcGxlLmNvbSIsImFhdF9oYXNoIjoiU0tYUUtzOTBYWGVCT0o4S1VwenIyQ1lCRGtvam5qMWgxUUh6WThkRzhUVSIsImFhdF9pZCI6IjAxOTQ3MWY4LTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMGU3YiIsImFhdF90b29sIjoicmVhZF9maWxlIiwiaHRhIjp7ImxpbWl0IjoxMDAwLCJwYXRoIjoiL2RhdGEvcTMtcmVwb3J0LnBkZiJ9LCJpYXQiOjE3MDQwNjc1MDAsImp0aSI6IjAxOTQ3MWY4LTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMGU4YiJ9` |
+| SHA-256(signing input), base64url | `r4WYqBzj1EZPCARi5smtBAKEvpmReQzT-vWD0MMaeS0` |
+| signature_b64 | `aDXBtYCdcvPuiCC9d2Hz1vhtIIx3tWI1KIqRbOIARm6DFY9D2djzTawfr5QoM0CpbHhCE23i9bnb9KhB-WGlBw` |
+
+Compact JWS:
+```
+eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWF0LXBvcCtqd3QifQ.eyJhYXRfYXVkIjoiaHR0cHM6Ly90b29scy5leGFtcGxlLmNvbSIsImFhdF9oYXNoIjoiU0tYUUtzOTBYWGVCT0o4S1VwenIyQ1lCRGtvam5qMWgxUUh6WThkRzhUVSIsImFhdF9pZCI6IjAxOTQ3MWY4LTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMGU3YiIsImFhdF90b29sIjoicmVhZF9maWxlIiwiaHRhIjp7ImxpbWl0IjoxMDAwLCJwYXRoIjoiL2RhdGEvcTMtcmVwb3J0LnBkZiJ9LCJpYXQiOjE3MDQwNjc1MDAsImp0aSI6IjAxOTQ3MWY4LTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMGU4YiJ9.aDXBtYCdcvPuiCC9d2Hz1vhtIIx3tWI1KIqRbOIARm6DFY9D2djzTawfr5QoM0CpbHhCE23i9bnb9KhB-WGlBw
 ```
 
 ---

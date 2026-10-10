@@ -97,6 +97,10 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
         "well-formedness: a range with min greater than max is not rejected",
     ),
     (
+        "J.21.12",
+        "well-formedness: a member the constraint type does not define is ignored (Range and the other constraint structs do not deny unknown fields)",
+    ),
+    (
         "J.22.1",
         "optional arguments: not implemented in ConstraintSet",
     ),

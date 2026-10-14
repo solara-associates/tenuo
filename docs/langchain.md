@@ -18,11 +18,7 @@ Give each task only the tools, argument values, and time it needs. Tenuo enforce
 ✗ search("customers:*")          denied
 ```
 
-Same tool, three calls. The task was to answer one customer's ticket, so only that customer's lookup runs.
-
-```bash
-uv pip install "tenuo[langchain]"
-```
+Same tool, three calls. The task was to answer one customer's ticket, so only that customer's lookup runs. Install with `uv pip install "tenuo[langchain]"`.
 
 ---
 

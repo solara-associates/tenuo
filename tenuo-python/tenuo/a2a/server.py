@@ -1212,13 +1212,6 @@ class A2AServer:
         # Extract JTI once — reused for replay check and audit event
         jti = self._get_warrant_prop(warrant, "jti", "id")
 
-        # Check replay
-        if self.check_replay:
-            if jti:
-                is_new = await self._replay_cache.check_and_add(jti, self.replay_window)
-                if not is_new:
-                    raise ReplayDetectedError(jti)
-
         # Set when the shared PEP allowed the call. Its receipt is collected only
         # after the A2A-local gates below pass, so a later local denial never
         # leaves a signed allow behind.
@@ -1375,7 +1368,17 @@ class A2AServer:
                             reason="Value does not satisfy server constraint",
                         )
 
-        # Every A2A gate has passed: only now record the Authorizer's allow.
+        # Check replay last, once the call is authorized to run. Recording the
+        # jti earlier let a denied attempt consume it: an approval-required
+        # response burned the warrant the approved retry needed, and a caller
+        # without the holder key could burn a copied warrant with a bad PoP.
+        if self.check_replay:
+            if jti:
+                is_new = await self._replay_cache.check_and_add(jti, self.replay_window)
+                if not is_new:
+                    raise ReplayDetectedError(jti)
+
+        # Every gate, replay included, has passed: only now record the allow.
         if enforcement is not None:
             collect_enforcement_receipt(enforcement, enforcement.chain_result, runtime=runtime)
 

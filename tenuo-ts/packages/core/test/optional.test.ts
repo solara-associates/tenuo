@@ -113,6 +113,10 @@ describe("optional()", () => {
     ).toThrow();
     expect(() => tenuo.narrow(required, { query: pattern("customers:*"), limit: optional(range({ min: 1, max: 10 })) })).toThrow();
     expect(() => tenuo.narrow(session, { query: optional(pattern("customers:*")), limit: optional(range({ max: 10 })) })).toThrow();
+    // wildcard() admits any value but not absence, so it cannot become optional either
+    const anyQuery = tenuo.session({ allow: { search: { query: wildcard() } } });
+    expect(() => tenuo.narrow(anyQuery, { query: optional(wildcard()) })).toThrow();
+    expect(() => tenuo.narrow(anyQuery, { query: pattern("customers:*") })).not.toThrow();
 
     const tool = tenuo.tool(
       { execute: async (_args: Record<string, unknown>) => "ok" },

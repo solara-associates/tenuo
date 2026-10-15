@@ -340,7 +340,7 @@ Both integrate via the input_guardrails parameter:
     )
 
 For more information:
-  - Documentation: https://tenuo.ai/docs
+  - Documentation: https://tenuo.ai/quickstart
   - Explorer: https://tenuo.ai/explorer
 """)
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from copy import deepcopy
 from pathlib import Path
 
 from .files import (
@@ -61,7 +62,8 @@ class Workspace:
         publish(self.path / ".gitignore", b"*\n!.gitignore\n")
         for directory in ("keys", "trust", "warrants", "sessions", "requests", "approvals"):
             (self.path / directory).mkdir(mode=0o700)
-        config = dict(DEFAULT_CONFIG, dev_roots=["issuer"] if dev else [])
+        config = deepcopy(DEFAULT_CONFIG)
+        config["dev_roots"] = ["issuer"] if dev else []
         if dev:
             for identity in ("issuer", "agent", "approver"):
                 keygen(self.path / "keys" / identity)
@@ -130,6 +132,13 @@ class Workspace:
         for path in sorted((self.path / "keys").glob("*.key")):
             if path.stat().st_mode & 0o077:
                 checks.append({"status": "error", "message": f"Private key permissions too broad: chmod 600 {path}"})
+            public = path.with_suffix(".pub")
+            if public.exists():
+                try:
+                    if bytes(load_signing_key(path).public_key.to_bytes()) != bytes(load_public_key(public).to_bytes()):
+                        raise ValueError
+                except Exception:
+                    checks.append({"status": "error", "message": f"Key pair {path.stem} is invalid or mismatched; restore its matching public key or create a new identity"})
         return checks
 
     def key_inventory(self):

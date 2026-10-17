@@ -51,9 +51,13 @@ tenuo-cli key new another-agent
 tenuo-cli trust add --file ./another-issuer.pub
 ```
 
-Key readers accept base64, hex and PEM. Commands display fingerprints, never
-private key bytes. Compare public-key fingerprints through a trusted channel
-before adding trust.
+Key readers accept base64, hex and PEM. Untagged public keys must have a `.pub`
+filename; public-key PEM files can use other names. Private `.key` paths,
+including symlinks to them, are rejected as public inputs. Public and private
+Ed25519 values can both contain 32 bytes, so byte length alone cannot distinguish
+them. Keep the generated filenames and exchange only the `.pub` files.
+Commands display fingerprints, never private key bytes. Compare public-key
+fingerprints through a trusted channel before adding trust.
 
 ## Revocation
 
@@ -312,6 +316,29 @@ Issuing another file leaves an already running workflow's warrant unchanged.
 Local signed receipt delivery reports storage failures in logs rather than
 turning a completed effect into a retry. Receipts are decision evidence, not
 proof that an authorized effect completed.
+
+## Rotation
+
+Before rotating an issuer, generate and trust the replacement public key,
+then advance the existing signed revocation list using that key:
+
+```bash
+tenuo-cli key new next-issuer
+tenuo-cli trust add --file .tenuo/keys/next-issuer.pub --name next-issuer
+tenuo-cli revocations add --key next-issuer --id tnu_wrt_RETIRED_GRANT
+tenuo-cli warrant issue --template orders.yaml --holder agent --key next-issuer
+```
+
+Deliver the new warrant, public trust and list, update `issuer:` in the
+controller's `config.yaml`, then remove the retired public key from `trust/`.
+Update `dev_roots` when rotating development identities. The new list preserves
+revoked IDs and advances the version; a verifier's cached old issuer is used
+only for its version floor, never restored to live warrant trust.
+
+For holder rotation, create a new agent identity, issue to its public key,
+update the runtime key selection and deliver the new grants. Revoke known old
+warrant IDs explicitly. Rotating a key does not revoke unknown grants elsewhere;
+they remain bounded by their signed expiry and the verifiers' revocation data.
 
 ## Session attachments
 

@@ -89,7 +89,11 @@ async def store_credit(order_id: str, amount_cents: int) -> str:
 ALL_TOOLS = [get_order, refund, store_credit]
 ```
 
-Give it to the agent in `workflow.py`, next to the other two:
+Give it to the agent in `workflow.py`: import it, and add it next to the other two.
+
+```python
+from examples.tenuo_refunds.tools import get_order, refund, store_credit
+```
 
 ```python
 tools=[

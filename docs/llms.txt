@@ -42,6 +42,7 @@ Guidance for agents writing code with Tenuo:
 - [FastAPI](https://tenuo.ai/fastapi): API protection for FastAPI
 - [Temporal](https://tenuo.ai/temporal): Warrant-based authorization for Temporal AI agent workflows
 - [Temporal Quickstart](https://tenuo.ai/temporal-quickstart): Run a Tenuo-authorized Temporal workflow locally
+- [Temporal Agent Harness](https://tenuo.ai/temporal-agent-harness): Warrant-checked tool calls for agents on the Temporal agent harness, from demo to production
 - [Temporal Nexus](https://tenuo.ai/temporal-nexus): Authorization across Temporal Nexus namespace boundaries
 - [Kubernetes](https://tenuo.ai/kubernetes): Deployment patterns for Kubernetes
 - [TypeScript SDK](https://github.com/tenuo-ai/tenuo/blob/main/tenuo-ts/README.md): `@tenuo/core` and `@tenuo/mcp` (beta)

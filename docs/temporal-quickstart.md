@@ -227,6 +227,8 @@ comes from the Temporal plugin and the warrant.
 ## Next steps
 
 - [Temporal Integration](./temporal.md) — the main guide.
+- [Tenuo on the Temporal Agent Harness](./temporal-agent-harness.md) — a chat
+  agent whose tool calls are checked against a warrant, from demo to production.
 - [Temporal Integration Reference](./temporal-reference.md) — production
   configuration, replay safety, revocation, approvals, and troubleshooting.
 - [Tenuo for Temporal Nexus](./temporal-nexus-use-cases.md) — cross-namespace

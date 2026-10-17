@@ -34,6 +34,9 @@ only on namespace-level access. For customer-facing scenarios, see
 If you want the shortest copy-paste path first, start with the
 [Temporal Quickstart](./temporal-quickstart.md). It runs one authorized
 workflow locally and shows both an allowed Activity and a denied Activity.
+Building a chat agent on the
+[Temporal agent harness](https://github.com/temporal-community/temporal-agent-harness)?
+Start with [Tenuo on the Temporal Agent Harness](./temporal-agent-harness.md).
 
 ## Install
 

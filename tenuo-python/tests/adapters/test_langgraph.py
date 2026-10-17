@@ -276,6 +276,31 @@ class TestTenuoNode:
         assert out["result"] == "ok"
         assert seen["id"] == warrant.id
 
+    def test_compiled_graph_still_injects_runtime(self, registry):
+        """Advertising ``config`` must not hide other parameters LangGraph injects by name."""
+        pytest.importorskip("langgraph.runtime")
+        from langgraph.graph import END, START, StateGraph
+        from langgraph.runtime import Runtime
+
+        warrant, key = Warrant.quick_mint(tools=["search"], ttl=3600)
+        registry.register("graph-key", key)
+        seen = {}
+
+        @tenuo_node
+        def my_node(state: MockState, runtime: Runtime, bound_warrant: BoundWarrant) -> dict:
+            seen["runtime"] = runtime
+            return {"result": "ok"}
+
+        graph = StateGraph(MockState)
+        graph.add_node("node", my_node)
+        graph.add_edge(START, "node")
+        graph.add_edge("node", END)
+
+        out = graph.compile().invoke({"warrant": warrant}, config=make_config("graph-key"))
+
+        assert out["result"] == "ok"
+        assert isinstance(seen["runtime"], Runtime)
+
     def test_config_forwarded_when_node_accepts_it(self, warrant_and_key, registry):
         """Nodes that declare ``config`` still receive it; others do not."""
         warrant, key_id = warrant_and_key

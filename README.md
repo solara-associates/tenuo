@@ -55,8 +55,8 @@ approvals, revocation, rotation, session attachments and signed audit receipts.
 It includes setup for [LangChain and LangGraph](docs/local-cli.md#langchain-and-langgraph),
 [MCP](docs/local-cli.md#mcp-client-and-server) and
 [Temporal](docs/local-cli.md#temporal). Each adapter checks current local
-authority before protected calls. Controller and approver private keys stay
-outside deployed agents.
+authority before protected calls. Issuer and approver private keys live in
+`~/.tenuo`, outside the project, and stay out of the agent's reach.
 
 ### AI coding agents
 

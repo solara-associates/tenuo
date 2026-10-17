@@ -114,7 +114,7 @@ def reissue(previous, key, ttl, *, holder=None):
     old = previous[0]
     check_public_material(key, [holder or old.holder_key, *(old.required_approvers() or [])])
     if bytes(old.issuer.to_bytes()) != bytes(key.public_key.to_bytes()) or not old.verify(key.public_key.to_bytes()):
-        raise DocumentError("controller key does not match the previous warrant")
+        raise DocumentError("issuer key does not match the previous warrant")
     if (
         old.warrant_type != WarrantType.Execution
         or old.extensions()

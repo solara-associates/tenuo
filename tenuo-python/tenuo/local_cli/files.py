@@ -193,9 +193,9 @@ def read_revocation_list(path):
 
 @contextmanager
 def operator_lock(directory):
-    """Serialize read/modify/publish operations by local controllers."""
+    """Serialize read/modify/publish operations by concurrent tenuo-cli processes."""
     if os.name != "posix":
-        raise DocumentError("local controller updates currently require macOS or Linux")
+        raise DocumentError("local workspace updates currently require macOS or Linux")
     import fcntl
 
     directory = Path(directory)

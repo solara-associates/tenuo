@@ -25,9 +25,10 @@ For local setup, first verify the resolved Python checkout exposes
 Use its matching `docs/local-cli.md` for schema/command details. Otherwise use
 installed SDK builders; do not upgrade or add Cloud implicitly.
 
-`init --dev` handles separate controller, agent and approver keys. Issuance
+`init --dev` handles separate issuer, agent and approver keys in `~/.tenuo`. Issuance
 needs only the holder's public key. Never print private material or give the
-agent the controller/approver private keys; same-user files are not isolation.
+agent the issuer/approver private keys: scope its file tools to the project
+with `subpath` and allow no unrestricted shell; same-user files are not isolation.
 Use the shared SDK parser for version-2 YAML templates and ad-hoc requests,
 then `template validate` and `warrant issue`. Editable YAML proposes authority;
 only the signed warrant grants it. Reissue creates a new ID; the old grant

@@ -128,3 +128,15 @@ def test_root_rotation_advances_srl_without_restoring_retired_trust(tmp_path, ca
     with pytest.raises(Exception):
         current.authorizer.verify_chain([old_grant])
     assert current.srl.version == 2 and current.srl.is_revoked("tnu_wrt_previous")
+
+
+def test_default_workspace_is_outside_the_project(tmp_path, monkeypatch):
+    """Keys default to ~/.tenuo, so tools scoped to the project cannot reach them."""
+    monkeypatch.delenv("TENUO_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    assert Workspace().path == tmp_path / "home" / ".tenuo"
+    monkeypatch.setenv("TENUO_HOME", str(tmp_path / "custom"))
+    assert Workspace().path == tmp_path / "custom"

@@ -34,7 +34,9 @@ DEFAULT_CONFIG = {
 
 class Workspace:
     def __init__(self, path=None):
-        self.path = Path(path or os.environ.get("TENUO_HOME", ".tenuo")).expanduser().absolute()
+        # Outside the project by default, so a warrant that scopes agent file
+        # tools to the project (e.g. Subpath) also keeps them away from these keys.
+        self.path = Path(path or os.environ.get("TENUO_HOME", "~/.tenuo")).expanduser().absolute()
 
     @property
     def config(self):
@@ -117,7 +119,7 @@ class Workspace:
             checks.append(
                 {
                     "status": "warning",
-                    "message": "Local development identities: keep controller and approver keys outside the deployed agent",
+                    "message": "Local development identities: keep issuer and approver keys out of the agent's reach",
                 }
             )
         for identity in (config["issuer"], "approver"):

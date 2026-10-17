@@ -1,4 +1,4 @@
-"""Thin argparse interface over local controller operations."""
+"""Thin argparse interface over local workspace operations."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from .workspace import Workspace
 
 def parser():
     root = argparse.ArgumentParser(prog="tenuo-cli", description="Authorize agents locally from readable files.")
-    root.add_argument("--home", help="Local workspace (default: TENUO_HOME or .tenuo)")
+    root.add_argument("--home", help="Local workspace (default: TENUO_HOME or ~/.tenuo)")
     root.add_argument("--json", action="store_true", help="Print one JSON object to stdout")
     commands = root.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init", help="Prepare local files; --dev also prepares development identities")
@@ -43,7 +43,7 @@ def parser():
         sub = srl.add_parser(action)
         sub.add_argument("--file")
         if action != "show":
-            sub.add_argument("--key", help="Controller key name or path")
+            sub.add_argument("--key", help="Issuer key name or path")
         if action == "add":
             sub.add_argument("--id", required=True, action="append")
     commands.add_parser("doctor")

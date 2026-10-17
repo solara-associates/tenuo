@@ -24,7 +24,7 @@ class Snapshot:
 class LocalAuthority:
     """One explicit warrant file, independent public trust, and an agent key.
 
-    The controller's and approver's private keys are never read here. A malformed
+    The issuer's and approver's private keys are never read here. A malformed
     configured file denies the current call rather than retaining old authority.
     """
 

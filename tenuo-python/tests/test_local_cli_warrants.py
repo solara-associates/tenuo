@@ -160,3 +160,17 @@ def test_a09_expired_warrant_denies_same_operation():
     time.sleep(2.1)
     with pytest.raises(Exception, match="[Ee]xpir"):
         authorizer.verify_chain([warrant])
+
+
+def test_show_prints_constraints_in_template_syntax(setup):
+    workspace, _ = setup
+    capabilities = {
+        "refund": {"order_id": "A-1001", "amount_cents": "1..12000", "reason": "any"},
+        "read_file": {"path": {"subpath": "/srv/app"}},
+        "search": {"scope": ["docs", "code"], "glob": {"pattern": "*.md"}, "id": {"regex": "^d-[0-9]+$"}},
+        "fetch": {"url": {"url_pattern": "https://api.example.com/*"}, "limit": "..50", "mode": {"exact": "any"}},
+    }
+    template = WarrantTemplate({"version": 2, "ttl": "10m", "capabilities": capabilities})
+    shown = describe(issue(workspace, template, workspace.public_key("agent")))
+    assert shown["capabilities"] == capabilities
+    assert shown["warrant_type"] == "execution"

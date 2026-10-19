@@ -30,9 +30,11 @@ def test_a06_cli_issue_show_list_verify_revoke(setup, capsys):
     assert main([*prefix, "warrant", "issue", "--template", str(path), "--holder", "agent"]) == 0
     result = json.loads(capsys.readouterr().out)
     wid = result["warrant"]["id"]
+    assert result["warrant"]["verified"] is True
     assert load_chain(result["files"][0])[-1].id == wid
     assert main([*prefix, "warrant", "show", "--id", wid]) == 0
-    assert json.loads(capsys.readouterr().out)["warrant"]["verified"] is False
+    # show decodes without checking trust, so it makes no claim either way.
+    assert "verified" not in json.loads(capsys.readouterr().out)["warrant"]
     assert main([*prefix, "warrant", "verify", "--id", wid]) == 0
     assert json.loads(capsys.readouterr().out)["valid"] is True
     assert main([*prefix, "revocations", "add", "--id", wid]) == 0
@@ -174,3 +176,15 @@ def test_show_prints_constraints_in_template_syntax(setup):
     shown = describe(issue(workspace, template, workspace.public_key("agent")))
     assert shown["capabilities"] == capabilities
     assert shown["warrant_type"] == "execution"
+
+
+def test_issue_reports_failed_check_for_untrusted_issuer(setup, capsys, tmp_path):
+    workspace, path = setup
+    stranger = tmp_path / "stranger.key"
+    stranger.write_bytes(SigningKey.generate().secret_key_bytes())
+    stranger.chmod(0o600)
+    prefix = ["--home", str(workspace.path), "--json"]
+    assert main([*prefix, "warrant", "issue", "--template", str(path), "--holder", "agent", "--key", str(stranger)]) == 0
+    warrant = json.loads(capsys.readouterr().out)["warrant"]
+    assert warrant["verified"] is False
+    assert "verification_error" in warrant

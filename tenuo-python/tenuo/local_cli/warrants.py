@@ -60,7 +60,6 @@ def describe(chain):
         "approvers": [fingerprint(k) for k in (leaf.required_approvers() or [])],
         "required_signatures": leaf.approval_threshold(),
         "extensions_base64": {k: base64.b64encode(v).decode() for k, v in leaf.extensions().items()},
-        "verified": False,
         "warrant_type": str(leaf.warrant_type).rsplit(".", 1)[-1].lower(),
         "session_id": leaf.session_id,
         "terminal": leaf.terminal,
@@ -71,6 +70,19 @@ def describe(chain):
         "max_issue_depth": leaf.max_issue_depth,
         "constraint_bounds": repr(leaf.constraint_bounds_dict()) if leaf.constraint_bounds_dict() is not None else None,
     }
+
+
+def check(workspace, chain):
+    """Whether the chain is valid against this workspace's trust, expiry and revocations right now.
+
+    ``describe`` only decodes, so it never claims validity; callers that ran the
+    check add this to their output.
+    """
+    try:
+        workspace.authorizer().verify_chain(chain)
+    except Exception:
+        return {"verified": False, "verification_error": "Not valid against current local trust, expiry or revocations"}
+    return {"verified": True}
 
 
 def issue(workspace, template, holder, *, issuer=None, parent=None):

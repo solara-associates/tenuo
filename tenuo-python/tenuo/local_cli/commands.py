@@ -234,7 +234,7 @@ def execute(opts, workspace):
 def warrant_command(opts, workspace):
     from pathlib import Path
     from tenuo.warrant_template import WarrantTemplate, duration
-    from .warrants import decode_chain, describe, issue, load_chain, reissue, save
+    from .warrants import check, decode_chain, describe, issue, load_chain, reissue, save
 
     if opts.action != "show":
         workspace.config
@@ -262,18 +262,16 @@ def warrant_command(opts, workspace):
             issuer=opts.key,
             parent=load_chain(opts.parent) if opts.parent else None,
         )
-        return {"warrant": describe(chain), "files": save(workspace, chain, out=opts.out, store=not opts.no_store)}
+        return {
+            "warrant": {**describe(chain), **check(workspace, chain)},
+            "files": save(workspace, chain, out=opts.out, store=not opts.no_store),
+        }
     if opts.action == "list":
         entries, errors = [], []
         for path in sorted((workspace.path / "warrants").glob("*.warrant")):
             try:
-                row = describe(load_chain(path))
-                try:
-                    workspace.authorizer().verify_chain(load_chain(path))
-                    row["verified"] = True
-                except Exception:
-                    row["verification_error"] = "Not valid against current local trust, expiry or revocations"
-                entries.append(row)
+                chain = load_chain(path)
+                entries.append({**describe(chain), **check(workspace, chain)})
             except Exception:
                 errors.append({"file": str(path), "error": "Could not decode warrant"})
         return {"warrants": entries, "errors": errors}
@@ -301,7 +299,10 @@ def warrant_command(opts, workspace):
         issuer=opts.key,
         holder=workspace.public_key(opts.holder) if opts.holder else None,
     )
-    return {"warrant": describe(chain), "files": save(workspace, chain, out=opts.out, store=not opts.no_store)}
+    return {
+        "warrant": {**describe(chain), **check(workspace, chain)},
+        "files": save(workspace, chain, out=opts.out, store=not opts.no_store),
+    }
 
 
 def main(argv=None):

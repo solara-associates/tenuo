@@ -73,8 +73,9 @@ def parser():
     issue.add_argument("--holder")
     issue.add_argument("--from", dest="parent")
     issue.add_argument("--key")
-    for action in ("show", "verify", "reissue"):
-        sub = warrants.add_parser(action)
+    for action in ("show", "verify", "reissue", "review"):
+        help = "Explain what a warrant or YAML template allows, and what gets through" if action == "review" else None
+        sub = warrants.add_parser(action, help=help)
         source = sub.add_mutually_exclusive_group(required=True)
         source.add_argument("--file")
         source.add_argument("--id", type=name)
@@ -182,7 +183,9 @@ def execute(opts, workspace):
             return {"file": opts.out, "message": "Edit the tool and argument names to match your application."}
         template = WarrantTemplate.load(opts.file)
         if opts.action == "validate":
-            return {"valid": True, "file": opts.file}
+            from .review import brief, review_template
+
+            return {"valid": True, "file": opts.file, "review": brief(review_template(template), opts.file)}
         return {"template": template.expanded() if opts.expanded else template.document, "signed": False}
     if opts.command == "init":
         workspace.initialize(dev=opts.dev)
@@ -234,9 +237,10 @@ def execute(opts, workspace):
 def warrant_command(opts, workspace):
     from pathlib import Path
     from tenuo.warrant_template import WarrantTemplate, duration
+    from .review import brief, review_chain, review_template
     from .warrants import decode_chain, describe, issue, load_chain, reissue, save
 
-    if opts.action != "show":
+    if opts.action not in ("show", "review"):
         workspace.config
 
     if opts.action == "issue":
@@ -262,7 +266,8 @@ def warrant_command(opts, workspace):
             issuer=opts.key,
             parent=load_chain(opts.parent) if opts.parent else None,
         )
-        return {"warrant": describe(chain), "files": save(workspace, chain, out=opts.out, store=not opts.no_store)}
+        files = save(workspace, chain, out=opts.out, store=not opts.no_store)
+        return {"warrant": describe(chain), "files": files, "review": brief(review_chain(chain), files[-1])}
     if opts.action == "list":
         entries, errors = [], []
         for path in sorted((workspace.path / "warrants").glob("*.warrant")):
@@ -278,11 +283,15 @@ def warrant_command(opts, workspace):
                 errors.append({"file": str(path), "error": "Could not decode warrant"})
         return {"warrants": entries, "errors": errors}
     path = getattr(opts, "file", None) or workspace.path / "warrants" / (opts.id + ".warrant")
+    if opts.action == "review" and str(path).endswith((".yaml", ".yml")):
+        return {"review": review_template(WarrantTemplate.load(path))}
     if opts.action == "show" and str(path).endswith((".yaml", ".yml")):
         return {"request": WarrantTemplate.load(path).document, "signed": False}
     chain = decode_chain(sys.stdin.read(4 * 1024 * 1024 + 1)) if str(path) == "-" else load_chain(path)
     if opts.action == "show":
         return {"warrant": describe(chain)}
+    if opts.action == "review":
+        return {"review": review_chain(chain)}
     if opts.action == "verify":
         try:
             workspace.authorizer().verify_chain(chain)

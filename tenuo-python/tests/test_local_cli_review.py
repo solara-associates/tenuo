@@ -147,3 +147,93 @@ def test_cli_review_needs_no_workspace(tmp_path, capsys):
     path.write_text(yaml.safe_dump(tight(tmp_path)))
     assert main(["--home", str(tmp_path / "missing"), "--json", "warrant", "review", "--file", str(path)]) == 0
     assert json.loads(capsys.readouterr().out)["review"]["summary"] == "6 tools, valid for 30m: 1 low"
+
+
+def nested_warrant():
+    from tenuo import All, AnyOf, Exact, Not, Range, Regex, Warrant
+
+    key = SigningKey.generate()
+    path = All([Regex(r"^(public|web)/"), Not(Regex(r"(^|/)\.env")), Not(Regex(r"(^|/)\.\.(/|$)"))])
+    return (
+        Warrant.mint_builder()
+        .holder(key.public_key)
+        .ttl(600)
+        .capability("read_file", path=path)
+        .capability("refund", amount_cents=AnyOf([Range(1, 5000), Exact("0")]))
+        .mint(key)
+    )
+
+
+def test_nested_constraints_are_described_from_the_signed_payload():
+    allows = review_chain([nested_warrant()])["allows"]
+    assert allows["read_file"]["path"] == (
+        'all of: regex "^(public|web)/"; not (regex "(^|/)\\\\.env"); not (regex "(^|/)\\\\.\\\\.(/|$)")'
+    )
+    assert allows["refund"]["amount_cents"] == 'any of: 1 to 5000; exactly "0"'
+
+
+def test_nested_template_constraints_are_described(tmp_path):
+    from tenuo import All, Not, Regex
+
+    template = WarrantTemplate({"version": 2, "ttl": "5m", "capabilities": {"read_file": {"path": "any"}}})
+    template._capabilities["read_file"]["path"] = All([Regex("^src/"), Not(Regex(r"\.env"))])
+    assert review_template(template)["allows"]["read_file"]["path"] == ('all of: regex "^src/"; not (regex "\\\\.env")')
+
+
+def test_every_wire_type_decodes():
+    from tenuo import (
+        CEL,
+        All,
+        AnyOf,
+        Cidr,
+        Contains,
+        Exact,
+        Not,
+        NotOneOf,
+        OneOf,
+        Pattern,
+        Range,
+        Regex,
+        Subpath,
+        Subset,
+        UrlPattern,
+        UrlSafe,
+        Warrant,
+        Wildcard,
+    )
+    from tenuo.local_cli import payload
+
+    constraints = [
+        Exact("a"),
+        Pattern("s/*"),
+        Range(1, 5),
+        OneOf(["a"]),
+        Regex("^a"),
+        NotOneOf(["x"]),
+        Cidr("10.0.0.0/8"),
+        UrlPattern("https://x.com/*"),
+        Contains(["a"]),
+        Subset(["a"]),
+        All([Exact("a")]),
+        AnyOf([Exact("a")]),
+        Not(Exact("a")),
+        CEL("value > 1"),
+        Wildcard(),
+        Subpath("/p"),
+        UrlSafe(allow_domains=["x.com"]),
+    ]
+    key = SigningKey.generate()
+    builder = Warrant.mint_builder().holder(key.public_key).ttl(60)
+    builder = builder.capability("t", **{f"a{i}": c for i, c in enumerate(constraints)})
+    trees = payload.constraint_trees(builder.mint(key))["t"]
+    assert len(trees) == len(constraints)
+    assert all(payload.describe(tree) for tree in trees.values())
+
+
+def test_unreadable_payload_falls_back_to_repr(monkeypatch):
+    from tenuo.local_cli import payload
+
+    with pytest.raises(ValueError):
+        payload.decode(b"\x82\x01")
+    monkeypatch.setattr(payload, "constraint_trees", lambda warrant: {})
+    assert review_chain([nested_warrant()])["allows"]["read_file"]["path"] == "All(...)"

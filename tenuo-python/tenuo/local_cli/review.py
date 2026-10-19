@@ -11,6 +11,8 @@ import json
 import re
 from pathlib import Path
 
+from . import payload
+
 _PATH = {"path", "file", "filename", "filepath", "dir", "directory", "folder"}
 _URL = {"url", "uri", "endpoint", "href", "link", "webhook"}
 _COMMAND = {"cmd", "command", "script", "shell", "argv", "sql"}
@@ -32,6 +34,7 @@ _PROBES = {
     "recipient": ["attacker@evil.example"],
 }
 
+_OPAQUE = {"All", "AnyOf", "Any", "Not", "CEL"}
 _HIGH_RISK = {"path", "url", "command", "money", "recipient"}
 _RANK = {"high": 0, "medium": 1, "low": 2}
 
@@ -208,11 +211,21 @@ def _argument_findings(tool, argument, c):
     return []
 
 
-def review(capabilities, *, ttl_seconds, gated=(), delegable=False, subject=None, issued=False):
+def _explain(c, tree):
+    if type(c).__name__ in _OPAQUE and tree is not None:
+        try:
+            return payload.describe(tree)
+        except Exception:
+            pass
+    return describe_constraint(c)
+
+
+def review(capabilities, *, ttl_seconds, gated=(), delegable=False, subject=None, issued=False, trees=None):
     """Plain-language authority, findings and attack inputs that get through."""
-    findings, explained = [], {}
+    findings, explained, trees = [], {}, trees or {}
     for tool, arguments in capabilities.items():
-        explained[tool] = {arg: describe_constraint(c) for arg, c in arguments.items()} or "no arguments"
+        tool_trees = trees.get(tool, {})
+        explained[tool] = {arg: _explain(c, tool_trees.get(arg)) for arg, c in arguments.items()} or "no arguments"
         for arg, c in arguments.items():
             findings += _argument_findings(tool, arg, c)
         if tool not in gated and (_words(tool) & _GATE_WORTHY or any(kind(a) == "money" for a in arguments)):
@@ -257,8 +270,14 @@ def _duration(seconds):
 
 
 def review_template(template):
+    trees = None
+    if any(type(c).__name__ in _OPAQUE for args in template._capabilities.values() for c in args.values()):
+        from tenuo import SigningKey
+
+        trees = payload.constraint_trees(template.mint(SigningKey.generate(), SigningKey.generate().public_key))
     return review(
         template._capabilities,
+        trees=trees,
         ttl_seconds=template.ttl_seconds,
         gated=set(template._gates),
         delegable=True,
@@ -272,6 +291,7 @@ def review_chain(chain):
     delegable = not leaf.terminal and leaf.depth < leaf.max_depth
     return review(
         leaf.capabilities,
+        trees=payload.constraint_trees(leaf),
         ttl_seconds=max(int(leaf.ttl_seconds()), 0),
         gated=gated,
         delegable=delegable,

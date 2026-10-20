@@ -2103,17 +2103,18 @@ export type VerifiedReceipt = {
   policy_definition_hash?: string;
   prev_receipt_hash?: string;
   trusted_roots_hash?: string;
-  /** False on a denial recorded in observe mode (key 16): the call ran. */
-  enforced?: boolean;
+  /** Key 16: the mode the decision was made under. In observe mode a denied call ran. */
+  mode?: 'enforce' | 'observe';
 };
 
 /**
- * Panel heading for a receipt. An observed denial is still a deny, but the
- * call ran, so it must not read as a block.
+ * Panel heading for a receipt. A denial made in observe mode is still a deny,
+ * but the call ran, so it must not read as a block.
  */
-export function receiptHeadline(payload: Pick<VerifiedReceipt, 'outcome' | 'action' | 'enforced'>): string {
-  if (payload.outcome === 'allow') return `✅ ALLOW · ${payload.action}`;
-  if (payload.enforced === false) return `👁️ OBSERVED DENY (not enforced) · ${payload.action}`;
+export function receiptHeadline(payload: Pick<VerifiedReceipt, 'outcome' | 'action' | 'mode'>): string {
+  const observed = payload.mode === 'observe';
+  if (payload.outcome === 'allow') return `✅ ALLOW${observed ? ' (observe mode)' : ''} · ${payload.action}`;
+  if (observed) return `👁️ OBSERVED DENY (not enforced) · ${payload.action}`;
   return `🚫 DENY · ${payload.action}`;
 }
 
@@ -2323,12 +2324,16 @@ function ReceiptMode() {
                   {receiptHeadline(row.payload)}
                 </h2>
                 <ReceiptField label="request" value={row.payload.request_id} />
-                {row.payload.enforced === false && (
-                  <ReceiptField
-                    label="enforcement"
-                    value="⚠️ observed, not enforced: the policy denied this call, but the enforcement point was in observe mode and let it run"
-                  />
-                )}
+                <ReceiptField
+                  label="mode"
+                  value={
+                    row.payload.mode === 'observe'
+                      ? row.payload.outcome === 'deny'
+                        ? '⚠️ observe: the policy denied this call, but the enforcement point was observing and let it run'
+                        : 'observe: decided while observing, not by an enforcing check'
+                      : 'enforce'
+                  }
+                />
                 {row.signerRecognized !== undefined && (
                   <ReceiptField
                     label="authorizer"

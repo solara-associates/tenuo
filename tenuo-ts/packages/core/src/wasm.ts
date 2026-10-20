@@ -56,10 +56,10 @@ export type WasmReceipt = {
   /** SHA-256 (hex) of the trusted root set in force at decision time. */
   trusted_roots_hash?: string;
   /**
-   * False on a denial recorded in observe mode (receipt key 16): the policy
-   * said deny and the call ran anyway. True on every other receipt.
+   * The mode the decision was made under (receipt key 16). In observe mode a
+   * denied call ran anyway. Receipts that predate key 16 read as "enforce".
    */
-  enforced: boolean;
+  mode: "enforce" | "observe";
 };
 
 export type WasmReceiptChain = {

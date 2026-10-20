@@ -8,6 +8,8 @@ import {
   A30_4_RECEIPT_HEX,
   A30_5_RECEIPT_HEX,
   A30_6_RECEIPT_HEX,
+  A30_7_RECEIPT_HEX,
+  A30_1_LEGACY_RECEIPT_HEX,
   A30_POLICY_INPUT,
   A30_SRL_DIGEST_INPUT,
 } from "./vectors/spec.ts";
@@ -551,20 +553,26 @@ describe("A.30 authorization receipts", () => {
     expect(receipt.decision_code).toBe("tool-not-authorized");
   });
 
-  it("records a denial observe mode let through as not enforced", () => {
-    const receipt = verifyReceipt(A30_6_RECEIPT_HEX);
-
-    // Key 16 = false: the policy said deny but the call ran. A reader must
-    // not conclude the action was blocked.
-    expect(receipt.outcome).toBe("deny");
-    expect(receipt.decision_code).toBe("constraint-violation");
-    expect(receipt.enforced).toBe(false);
+  it("records the mode of every receipt as key 16", () => {
+    const expected: Array<[string, string, string]> = [
+      [A30_1_RECEIPT_HEX, "allow", "enforce"],
+      [A30_2_RECEIPT_HEX, "allow", "enforce"],
+      [A30_3_RECEIPT_HEX, "allow", "enforce"],
+      [A30_4_RECEIPT_HEX, "deny", "enforce"],
+      [A30_5_RECEIPT_HEX, "allow", "enforce"],
+      [A30_6_RECEIPT_HEX, "deny", "observe"],
+      [A30_7_RECEIPT_HEX, "allow", "observe"],
+    ];
+    for (const [wire, outcome, mode] of expected) {
+      const receipt = verifyReceipt(wire);
+      expect([receipt.outcome, receipt.mode]).toEqual([outcome, mode]);
+    }
+    // An observed denial ran: a reader must not conclude the action was blocked.
+    expect(verifyReceipt(A30_6_RECEIPT_HEX).decision_code).toBe("constraint-violation");
   });
 
-  it("reads every receipt without key 16 as enforced", () => {
-    for (const wire of [A30_1_RECEIPT_HEX, A30_2_RECEIPT_HEX, A30_3_RECEIPT_HEX, A30_4_RECEIPT_HEX, A30_5_RECEIPT_HEX]) {
-      expect(verifyReceipt(wire).enforced).toBe(true);
-    }
+  it("reads a receipt signed before key 16 as enforce", () => {
+    expect(verifyReceipt(A30_1_LEGACY_RECEIPT_HEX).mode).toBe("enforce");
   });
 
   it("rejects a receipt whose signature was tampered with", () => {

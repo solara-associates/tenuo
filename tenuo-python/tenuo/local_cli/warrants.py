@@ -78,10 +78,18 @@ def check(workspace, chain):
     ``describe`` only decodes, so it never claims validity; callers that ran the
     check add this to their output.
     """
+    from tenuo.exceptions import ExpiredError, RevokedError, UntrustedRoot
+
     try:
         workspace.authorizer().verify_chain(chain)
+    except ExpiredError:
+        return {"verified": False, "verification_error": "expired"}
+    except RevokedError:
+        return {"verified": False, "verification_error": "revoked"}
+    except UntrustedRoot:
+        return {"verified": False, "verification_error": "issuer not in local trust"}
     except Exception:
-        return {"verified": False, "verification_error": "Not valid against current local trust, expiry or revocations"}
+        return {"verified": False, "verification_error": "not valid against local trust, expiry or revocations"}
     return {"verified": True}
 
 

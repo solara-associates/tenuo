@@ -42,7 +42,8 @@ def test_a06_cli_issue_show_list_verify_revoke(setup, capsys):
     assert main([*prefix, "warrant", "verify", "--id", wid]) == 3
     assert json.loads(capsys.readouterr().out)["valid"] is False
     assert main([*prefix, "warrant", "list"]) == 0
-    assert json.loads(capsys.readouterr().out)["warrants"][0]["verified"] is False
+    listed = json.loads(capsys.readouterr().out)["warrants"][0]
+    assert (listed["verified"], listed["verification_error"]) == (False, "revoked")
 
 
 def test_a07_delegation_transports_full_chain_and_never_widens(setup):
@@ -187,4 +188,15 @@ def test_issue_reports_failed_check_for_untrusted_issuer(setup, capsys, tmp_path
     assert main([*prefix, "warrant", "issue", "--template", str(path), "--holder", "agent", "--key", str(stranger)]) == 0
     warrant = json.loads(capsys.readouterr().out)["warrant"]
     assert warrant["verified"] is False
-    assert "verification_error" in warrant
+    assert warrant["verification_error"] == "issuer not in local trust"
+
+
+def test_reissue_reports_its_check(setup, capsys):
+    workspace, path = setup
+    prefix = ["--home", str(workspace.path), "--json"]
+    assert main([*prefix, "warrant", "issue", "--template", str(path), "--holder", "agent"]) == 0
+    wid = json.loads(capsys.readouterr().out)["warrant"]["id"]
+    assert main([*prefix, "warrant", "reissue", "--id", wid, "--ttl", "5m"]) == 0
+    reissued = json.loads(capsys.readouterr().out)["warrant"]
+    assert reissued["id"] != wid
+    assert reissued["verified"] is True

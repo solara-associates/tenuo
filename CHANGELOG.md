@@ -92,6 +92,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   calls by choice as well as index, so `n>1` streams can't mix calls, and
   joins tool names split across chunks. Streamed calls, malformed and
   duplicate-key arguments, and buffer overflows now emit audit events.
+- **A2A: a denied call no longer consumes the warrant's jti.** The server
+  recorded the jti for replay protection before verifying the PoP and the
+  approval gate. An approval-required response burned the warrant, so the
+  retry with approvals failed with `replay_detected`, and a caller without
+  the holder key could burn a copied warrant with a bad PoP. The jti is now
+  recorded only once the call is authorized to run. A replayed call now
+  produces a signed `replay-detected` denial receipt instead of leaving a
+  false allow receipt behind.
 - **A2A server skill constraints apply with proof of possession.**
   Constraints declared with `@server.skill(..., constraints=...)` were only
   checked when `require_pop=False`, so with the default `require_pop=True` a

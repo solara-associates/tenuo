@@ -1212,13 +1212,6 @@ class A2AServer:
         # Extract JTI once — reused for replay check and audit event
         jti = self._get_warrant_prop(warrant, "jti", "id")
 
-        # Check replay
-        if self.check_replay:
-            if jti:
-                is_new = await self._replay_cache.check_and_add(jti, self.replay_window)
-                if not is_new:
-                    raise ReplayDetectedError(jti)
-
         # Set when the shared PEP allowed the call. Its receipt is collected only
         # after the A2A-local gates below pass, so a later local denial never
         # leaves a signed allow behind.
@@ -1388,7 +1381,38 @@ class A2AServer:
                             reason="Value does not satisfy server constraint",
                         )
 
-        # Every A2A gate has passed: only now record the Authorizer's allow.
+        # Check replay last, once the call is authorized to run. Recording the
+        # jti earlier let a denied attempt consume it: an approval-required
+        # response burned the warrant the approved retry needed, and a caller
+        # without the holder key could burn a copied warrant with a bad PoP.
+        if self.check_replay:
+            if jti:
+                is_new = await self._replay_cache.check_and_add(jti, self.replay_window)
+                if not is_new:
+                    if enforcement is not None:
+                        # PoP and all authorization gates succeeded, but the
+                        # one-time warrant was already consumed. Record the
+                        # qualified denial rather than dropping the decision or
+                        # emitting the provisional allow.
+                        collect_enforcement_receipt(
+                            EnforcementResult(
+                                allowed=False,
+                                tool=skill_id,
+                                arguments=arguments,
+                                denial_reason="Warrant replay detected",
+                                error_type="replay_detected",
+                                warrant_id=enforcement.warrant_id,
+                                authorizer=enforcement.authorizer,
+                                presented_chain=[*(_resolved_chain_parents or []), warrant],
+                                verified_pop=pop_signature,
+                                pop_auth_args=arguments,
+                            ),
+                            None,
+                            runtime=runtime,
+                        )
+                    raise ReplayDetectedError(jti)
+
+        # Every gate, replay included, has passed: only now record the allow.
         if enforcement is not None:
             collect_enforcement_receipt(enforcement, enforcement.chain_result, runtime=runtime)
 

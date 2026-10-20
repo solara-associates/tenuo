@@ -47,6 +47,17 @@ def parser():
         if action == "add":
             sub.add_argument("--id", required=True, action="append")
     commands.add_parser("doctor")
+    mode = commands.add_parser("mode", help="Show or set enforce or observe for local adapters")
+    mode.add_argument("value", nargs="?", choices=("enforce", "observe"))
+    calls = commands.add_parser("calls", help="Calls recorded in observe mode").add_subparsers(
+        dest="action", required=True
+    )
+    for action in ("list", "summary"):
+        sub = calls.add_parser(action)
+        sub.add_argument("--file")
+        sub.add_argument("--tool")
+        if action == "list":
+            sub.add_argument("--limit", type=int, default=100)
     audit = commands.add_parser("audit").add_subparsers(dest="action", required=True)
     for action in ("list", "verify"):
         sub = audit.add_parser(action)
@@ -229,6 +240,22 @@ def execute(opts, workspace):
         }
     if opts.command == "doctor":
         return {"checks": workspace.diagnostics()}
+    if opts.command == "mode":
+        if opts.value is None:
+            return {"mode": workspace.config["mode"]}
+        workspace.set_mode(opts.value)
+        message = (
+            "Local adapters now record calls and block nothing. Review them with tenuo-cli calls summary."
+            if opts.value == "observe"
+            else "Local adapters now enforce warrants. Restart Temporal workers to apply."
+        )
+        return {"mode": opts.value, "message": message}
+    if opts.command == "calls":
+        from .observations import list_calls, summarize_calls
+
+        if opts.action == "list":
+            return list_calls(workspace, path=opts.file, tool=opts.tool, limit=opts.limit)
+        return summarize_calls(workspace, path=opts.file, tool=opts.tool)
     raise DocumentError("unknown command")
 
 

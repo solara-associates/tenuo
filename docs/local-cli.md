@@ -28,7 +28,7 @@ The default workspace is `~/.tenuo/`, outside your project. Change it with
 
 | Path | Purpose |
 | --- | --- |
-| `config.yaml` | Strict versioned configuration, defaulting to enforcement |
+| `config.yaml` | Strict versioned configuration: `mode` is `enforce` (default) or `observe` |
 | `keys/issuer.key` | Issuer (root) private key: signs warrants |
 | `keys/agent.key` | Agent holder key: proves possession of its warrants |
 | `keys/approver.key` | Approver private key: signs held calls |
@@ -38,6 +38,7 @@ The default workspace is `~/.tenuo/`, outside your project. Change it with
 | `warrants/` | Issued warrant chains |
 | `sessions/` | Explicit operator-controlled session attachments |
 | `requests/`, `approvals/` | Portable requests and responses |
+| `observations.jsonl` | Calls recorded in observe mode, with argument values |
 
 Private files are created with mode `0600`, and the workspace ignores its
 contents in Git. No signing secrets are written to the application's `.env`.
@@ -277,8 +278,8 @@ Approval-gated calls write requests under `~/.tenuo/requests/`. The approval CLI
 default response path is `~/.tenuo/approvals/<request_hash>.yaml`; retrying the
 same call reads and verifies it. Decisions generate native signed receipts in
 the configured `receipts.jsonl` using the existing SDK receipt machinery.
-Local adapters currently support enforcement mode only and never read the
-issuer or approver private key. This is an in-process guardrail: expose
+Local adapters never read the issuer or approver private key. To see what an
+agent calls before writing its warrant, start in [observe mode](#observe-first). This is an in-process guardrail: expose
 effects through a separately protected service if agent code can bypass wrappers.
 
 ## MCP client and server
@@ -311,8 +312,8 @@ For signed server receipts, create a separate server identity and pass its
 name or private-key path as `MCPVerifier.local(key=...)`. Without it the server
 still verifies calls but does not produce local signed receipts.
 
-Both paths reread verification files per call and fail closed. The local client
-always enforces and presents its authority; it refuses `warrant_context=False`
+Both paths reread verification files per call and fail closed. In enforce mode
+the local client always checks and presents its authority; it refuses `warrant_context=False`
 and disabled warrant injection. File approvals acquired on the client are
 forwarded to the server as native signed approvals. A client check alone is an
 in-process guardrail; server mediation protects the MCP dispatch path. Neither
@@ -352,6 +353,53 @@ protection. It does not change approval expiry or retry semantics. Dynamic
 Nexus trust refresh and attaching replacement warrants to running workflows are
 separate lifecycle features; this adapter does not claim to implement them.
 Issuing another file leaves an already running workflow's warrant unchanged.
+
+## Observe first
+
+Before you have a warrant, run the agent with the workspace in observe mode.
+Local adapters then block nothing. Each call is recorded, with its arguments and
+the decision enforcement would have made, so you can draft a warrant from what
+the agent actually did.
+
+```bash
+tenuo-cli mode observe
+# run the agent for a few tasks
+tenuo-cli calls summary
+tenuo-cli calls list --tool get_order
+```
+
+In observe mode the LangChain tool and the MCP client may be created without
+`warrant=`. Calls recorded without one have `"decision": null` and
+`"reason": "no_warrant"`. With a warrant, a call outside its scope runs and is
+recorded as `"deny"` with the reason, such as a violated constraint, an expired
+or revoked warrant, or `approval_required`. No approval request is written.
+An `MCPVerifier.local` server in observe mode runs calls whether or not they
+carry a warrant; when both client and server use the workspace, each records
+the call it saw. `TenuoPluginConfig.local` maps observe mode onto `dry_run` and
+records each activity decision with its argument values.
+
+Calls go to `observations.jsonl` in the workspace, one JSON object per line,
+created readable by its owner only because it holds argument values. Each line
+has `run`, `step`, `tool` and `args`, the format
+[warrantgen](https://github.com/RajanChavada/warrantgen) reads to draft
+a template from recorded calls, plus `decision`, `reason`, `warrant_id` and
+`observed_at`. `run` is one adapter instance, or the Temporal workflow run.
+Pass `step=` to `TenuoTool.local`, `SecureMCPClient.local` or
+`MCPVerifier.local` to group calls that will share one warrant.
+
+Observe mode writes no signed receipts: receipts don't yet record the mode, so
+an observed denial would read as an enforced one.
+
+When the warrant is ready, switch back:
+
+```bash
+tenuo-cli mode enforce
+```
+
+LangChain, MCP client and MCP server adapters read the mode before every call,
+so the switch applies to the next call. Temporal fixes `dry_run` when the worker
+starts: after a switch the worker refuses protected activities until it is
+restarted. `tenuo-cli doctor` warns while the workspace is in observe mode.
 
 `tenuo.local` exposes shared key/public-key/SRL readers and
 `load_warrant_chain`; they use the same implementation as the common CLI.

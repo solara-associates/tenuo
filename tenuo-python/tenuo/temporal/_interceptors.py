@@ -1009,11 +1009,18 @@ class TenuoActivityInboundInterceptor:
         if authority is None:
             return await self._execute_activity(input)
         try:
+            observing = authority.observing
             snapshot = authority.snapshot()
         except Exception:
             raise self._wrap_as_non_retryable(ChainValidationError(
                 reason="Local verification files unavailable or invalid; run tenuo-cli doctor", depth=0
             )) from None
+        if observing != getattr(authority, "started_observing", False):
+            # dry_run was fixed when the worker started; refuse rather than
+            # keep observing after the workspace switched to enforce.
+            raise self._wrap_as_non_retryable(ChainValidationError(
+                reason="Local workspace mode changed since this worker started; restart the worker", depth=0
+            ))
         with authority.scope(snapshot) as (snapshot, _, _):
             return await self._execute_activity(input, local_snapshot=snapshot)
 

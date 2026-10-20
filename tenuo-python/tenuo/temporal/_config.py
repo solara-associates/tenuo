@@ -149,6 +149,15 @@ class TenuoPluginConfig:
                 or kwargs.get("block_local_activities", True) is not True):
             raise DocumentError("local Temporal configuration requires warrant enforcement")
         authority = LocalAuthority(path=path, key=key)
+        authority.started_observing = authority.observing
+        if authority.started_observing:
+            # Observe maps onto dry_run: denials are logged and the activity
+            # runs. Each decision is also recorded, with its arguments, to the
+            # workspace's observations.jsonl, which needs argument values
+            # (it is readable by its owner only).
+            kwargs["dry_run"] = True
+            kwargs.setdefault("redact_args_in_logs", False)
+            kwargs["audit_callback"] = _observation_recorder(authority, kwargs.get("audit_callback"))
         snapshot = authority.snapshot()
         return cls(signing_key=snapshot.key, trusted_roots=snapshot.roots, revocation_list=snapshot.srl,
                    _local_authority=authority, **kwargs)
@@ -724,3 +733,26 @@ class TenuoPluginConfig:
         self._activity_registry: Dict[str, Callable] = _build_activity_registry(
             self.activity_fns
         )
+
+
+def _observation_recorder(authority, forward=None):
+    """An audit callback that records each decision to observations.jsonl."""
+
+    def record(event):
+        try:
+            decision = str(event.decision).lower()
+            authority.record(
+                event.tool,
+                event.arguments or {},
+                decision=decision,
+                reason=None if decision == "allow" else (event.constraint_violated or "denied"),
+                warrant_id=event.warrant_id or None,
+                run=event.workflow_run_id,
+                step="+".join(sorted(event.warrant_capabilities or [])) or None,
+            )
+        except Exception:
+            logger.warning("Tenuo observe: could not record a Temporal decision", exc_info=True)
+        if forward is not None:
+            forward(event)
+
+    return record

@@ -5394,17 +5394,16 @@ impl PyReceiptPayload {
         self.inner.trusted_roots_hash.map(hex::encode)
     }
 
-    /// Whether the decision was enforced (key 16). `False` means a denial
-    /// recorded in observe mode: the policy said deny and the call ran anyway.
-    /// Receipts without key 16 read as `True`.
+    /// The mode the decision was made under (key 16): `"enforce"` or
+    /// `"observe"`. In observe mode a denied call ran anyway. Receipts that
+    /// predate key 16 were made under enforcement and read as `"enforce"`.
     #[getter]
-    fn enforced(&self) -> bool {
-        self.inner.enforced
+    fn mode(&self) -> &'static str {
+        self.inner.effective_mode().as_str()
     }
 
-    /// Raise if a conditionally-required field is missing or contradictory:
-    /// `decision_code` on a denial, `pop_signature` on an allow, and
-    /// `enforced = False` only on a denial.
+    /// Raise if a conditionally-required field is missing: `decision_code` on a
+    /// denial, `pop_signature` on an allow.
     fn check_conditional_requirements(&self) -> PyResult<()> {
         self.inner
             .check_conditional_requirements()
@@ -5413,10 +5412,10 @@ impl PyReceiptPayload {
 
     fn __repr__(&self) -> String {
         format!(
-            "ReceiptPayload(action='{}', outcome='{}', enforced={}, request_id='{}')",
+            "ReceiptPayload(action='{}', outcome='{}', mode='{}', request_id='{}')",
             self.inner.action,
             self.inner.outcome.as_str(),
-            if self.inner.enforced { "True" } else { "False" },
+            self.inner.effective_mode().as_str(),
             self.inner.request_id
         )
     }

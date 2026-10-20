@@ -154,7 +154,10 @@ impl PyReceiptIssuer {
         hex::encode(self.receipt_signer.public_key().to_bytes())
     }
 
-    #[pyo3(signature = (chain_result, tool, allowed, timestamp, request_id, decision_code=None))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        chain_result, tool, allowed, timestamp, request_id, decision_code=None, mode="enforce"
+    ))]
     fn issue_receipt(
         &self,
         chain_result: &PyChainVerificationResult,
@@ -163,6 +166,7 @@ impl PyReceiptIssuer {
         timestamp: i64,
         request_id: &str,
         decision_code: Option<&str>,
+        mode: &str,
     ) -> PyResult<Option<String>> {
         issue_allow_receipt(
             &self.receipt_signer,
@@ -174,13 +178,14 @@ impl PyReceiptIssuer {
             timestamp,
             request_id,
             decision_code,
+            parse_mode(mode)?,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         warrants, tool, args, timestamp, request_id, decision_code, verified_pop=None,
-        enforced=true
+        mode="enforce"
     ))]
     fn issue_denial_receipt(
         &self,
@@ -191,7 +196,7 @@ impl PyReceiptIssuer {
         request_id: &str,
         decision_code: &str,
         verified_pop: Option<&[u8]>,
-        enforced: bool,
+        mode: &str,
     ) -> PyResult<Option<String>> {
         issue_deny_receipt(
             &self.receipt_signer,
@@ -204,7 +209,7 @@ impl PyReceiptIssuer {
             request_id,
             decision_code,
             verified_pop,
-            enforced,
+            parse_mode(mode)?,
         )
     }
 }
@@ -284,6 +289,7 @@ fn issue_allow_receipt(
     timestamp: i64,
     request_id: &str,
     decision_code: Option<&str>,
+    mode: crate::receipt::Mode,
 ) -> PyResult<Option<String>> {
     let trust = match read_trust(trust)? {
         Some(t) => t,
@@ -307,6 +313,7 @@ fn issue_allow_receipt(
         None => return Ok(None),
     };
 
+    payload.mode = Some(mode);
     payload.trusted_roots_hash = Some(trust.trusted_roots_hash);
     if let Some((version, digest)) = trust.srl_commitment {
         payload.srl_version = version;
@@ -314,6 +321,17 @@ fn issue_allow_receipt(
     }
 
     encode_signed_receipt(signer, last_receipt_hash, payload)
+}
+
+#[cfg(feature = "python-server")]
+fn parse_mode(mode: &str) -> PyResult<crate::receipt::Mode> {
+    match mode {
+        "enforce" => Ok(crate::receipt::Mode::Enforce),
+        "observe" => Ok(crate::receipt::Mode::Observe),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(
+            "mode must be \"enforce\" or \"observe\"",
+        )),
+    }
 }
 
 #[cfg(feature = "python-server")]
@@ -329,7 +347,7 @@ fn issue_deny_receipt(
     request_id: &str,
     decision_code: &str,
     verified_pop: Option<&[u8]>,
-    enforced: bool,
+    mode: crate::receipt::Mode,
 ) -> PyResult<Option<String>> {
     let trust = match read_trust(trust)? {
         Some(t) => t,
@@ -384,7 +402,7 @@ fn issue_deny_receipt(
         Some(leaf.authorized_holder()),
     ));
     payload.root_principal = chain.first().map(|w| hex::encode(w.issuer().to_bytes()));
-    payload.enforced = enforced;
+    payload.mode = Some(mode);
     payload.trusted_roots_hash = Some(trust.trusted_roots_hash);
     if let Some((version, digest)) = trust.srl_commitment {
         payload.srl_version = version;
@@ -673,7 +691,10 @@ impl PyControlPlaneClient {
     /// authorizer or the verification carries no warrant stack. Every
     /// trust-critical field comes from `chain_result`; Python supplies only the
     /// framing.
-    #[pyo3(signature = (chain_result, tool, allowed, timestamp, request_id, decision_code=None))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        chain_result, tool, allowed, timestamp, request_id, decision_code=None, mode="enforce"
+    ))]
     fn issue_receipt(
         &self,
         chain_result: &PyChainVerificationResult,
@@ -682,6 +703,7 @@ impl PyControlPlaneClient {
         timestamp: i64,
         request_id: &str,
         decision_code: Option<&str>,
+        mode: &str,
     ) -> PyResult<Option<String>> {
         issue_allow_receipt(
             &self.receipt_signer,
@@ -693,6 +715,7 @@ impl PyControlPlaneClient {
             timestamp,
             request_id,
             decision_code,
+            parse_mode(mode)?,
         )
     }
 
@@ -718,9 +741,8 @@ impl PyControlPlaneClient {
     /// never checked and denying one that was are both false claims, so the
     /// caller says which happened by supplying the signature or omitting it.
     ///
-    /// `enforced=False` records a denial that was not enforced — observe mode
-    /// let the call run — as receipt key 16. Leave it at the default for an
-    /// enforced denial.
+    /// `mode` is receipt key 16: `"observe"` when the enforcement point was
+    /// observing, so this denial did not stop the call.
     ///
     /// Returns None when the client is not bound to an authorizer, or when no
     /// chain was presented at all — a request that carried no authority was
@@ -729,7 +751,7 @@ impl PyControlPlaneClient {
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         warrants, tool, args, timestamp, request_id, decision_code, verified_pop=None,
-        enforced=true
+        mode="enforce"
     ))]
     fn issue_denial_receipt(
         &self,
@@ -740,7 +762,7 @@ impl PyControlPlaneClient {
         request_id: &str,
         decision_code: &str,
         verified_pop: Option<&[u8]>,
-        enforced: bool,
+        mode: &str,
     ) -> PyResult<Option<String>> {
         issue_deny_receipt(
             &self.receipt_signer,
@@ -753,7 +775,7 @@ impl PyControlPlaneClient {
             request_id,
             decision_code,
             verified_pop,
-            enforced,
+            parse_mode(mode)?,
         )
     }
 

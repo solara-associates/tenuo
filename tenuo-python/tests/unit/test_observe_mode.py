@@ -190,27 +190,27 @@ def _runtime_receipt(mode: str, args: dict, *, use_async: bool = False):
 
 
 @pytest.mark.parametrize("use_async", [False, True])
-def test_observed_denial_receipt_is_deny_not_enforced(use_async):
+def test_observed_denial_receipt_is_deny_in_observe_mode(use_async):
     result, receipt = _runtime_receipt("observe", BAD_ARGS, use_async=use_async)
-    assert result.allowed and result.observed
+    assert result.allowed and result.observed and result.mode == "observe"
     assert receipt.outcome == "deny"
     assert receipt.decision_code
-    assert receipt.enforced is False
+    assert receipt.mode == "observe"
 
 
-def test_enforced_denial_receipt_is_enforced():
+def test_enforced_denial_receipt_records_enforce():
     result, receipt = _runtime_receipt("enforce", BAD_ARGS)
-    assert not result.allowed and not result.observed
+    assert not result.allowed and not result.observed and result.mode == "enforce"
     assert receipt.outcome == "deny"
-    assert receipt.enforced is True
+    assert receipt.mode == "enforce"
 
 
 @pytest.mark.parametrize("mode", ["enforce", "observe"])
-def test_allow_receipt_is_enforced(mode):
+def test_allow_receipt_records_the_mode(mode):
     result, receipt = _runtime_receipt(mode, {"payee": "ACCT-CLAIMANT", "amount": 10})
-    assert result.allowed and not result.observed
+    assert result.allowed and not result.observed and result.mode == mode
     assert receipt.outcome == "allow"
-    assert receipt.enforced is True
+    assert receipt.mode == mode
 
 
 # -- verify path --------------------------------------------------------------

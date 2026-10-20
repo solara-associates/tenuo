@@ -291,44 +291,55 @@ def test_a_structural_refusal_is_not_receipted():
     )
 
 
-# -- key 16: enforced ---------------------------------------------------------
+# -- key 16: mode -------------------------------------------------------------
 
 
-def test_a_denial_receipt_is_enforced_by_default():
+def test_a_denial_receipt_records_enforce_by_default():
     authorizer, chain, args = _expired_denial()
     client = _client()
     client.bind_authorizer(authorizer)
 
     wire = client.issue_denial_receipt(chain, "read_file", args, 1_700_000_000, "req-deny", "warrant-expired")
-    assert tenuo_core.verify_receipt(wire).enforced is True
+    assert tenuo_core.verify_receipt(wire).mode == "enforce"
 
 
-def test_an_unenforced_denial_receipt_says_so():
+def test_an_observed_denial_receipt_says_so():
     authorizer, chain, args = _expired_denial()
     client = _client()
     client.bind_authorizer(authorizer)
 
     wire = client.issue_denial_receipt(
         chain, "read_file", args, 1_700_000_000, "req-deny", "warrant-expired",
-        enforced=False,
+        mode="observe",
     )
     payload = tenuo_core.verify_receipt(wire)
     assert payload.outcome == "deny"
-    assert payload.enforced is False
+    assert payload.mode == "observe"
 
 
-def test_an_allow_receipt_is_enforced():
+@pytest.mark.parametrize("mode", ["enforce", "observe"])
+def test_an_allow_receipt_records_the_mode(mode):
     authorizer, result = _decision()
     client = _client()
     client.bind_authorizer(authorizer)
 
-    wire = client.issue_receipt(result, "read_file", True, 1_700_000_000, "req-1")
-    assert tenuo_core.verify_receipt(wire).enforced is True
+    wire = client.issue_receipt(result, "read_file", True, 1_700_000_000, "req-1", mode=mode)
+    payload = tenuo_core.verify_receipt(wire)
+    assert (payload.outcome, payload.mode) == ("allow", mode)
+
+
+def test_an_unknown_mode_is_refused():
+    authorizer, result = _decision()
+    client = _client()
+    client.bind_authorizer(authorizer)
+
+    with pytest.raises(ValueError):
+        client.issue_receipt(result, "read_file", True, 1_700_000_000, "req-1", mode="audit")
 
 
 @pytest.mark.parametrize("posture", ["deferred", "journal"])
 @pytest.mark.parametrize("observed", [True, False])
-def test_control_plane_denial_receipt_records_whether_it_was_enforced(tmp_path, posture, observed):
+def test_control_plane_denial_receipt_records_the_mode(tmp_path, posture, observed):
     from tenuo.receipts import JournalEmitter
 
     authorizer, chain, args = _expired_denial()
@@ -345,6 +356,7 @@ def test_control_plane_denial_receipt_records_whether_it_was_enforced(tmp_path, 
     decision = SimpleNamespace(
         allowed=observed,
         observed=observed,
+        mode="observe" if observed else "enforce",
         tool="read_file",
         arguments=args,
         warrant_id="wrt-test",
@@ -363,5 +375,5 @@ def test_control_plane_denial_receipt_records_whether_it_was_enforced(tmp_path, 
     assert len(wires) == 1
     payload = tenuo_core.verify_receipt(wires[0])
     assert payload.outcome == "deny"
-    assert payload.enforced is (not observed)
+    assert payload.mode == ("observe" if observed else "enforce")
 

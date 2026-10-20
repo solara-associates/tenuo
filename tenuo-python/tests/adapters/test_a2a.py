@@ -1926,9 +1926,9 @@ class TestServerConstraintsWithPoP:
         return core, server, warrant, key
 
     @staticmethod
-    async def _call(server, warrant, key, args):
-        pop = warrant.sign(key, "read_file", args, int(time.time()))
-        return await server.validate_warrant(warrant.to_base64(), "read_file", args, pop_signature=bytes(pop))
+    async def _call(server, warrant, key, args, skill_id="read_file"):
+        pop = warrant.sign(key, skill_id, args, int(time.time()))
+        return await server.validate_warrant(warrant.to_base64(), skill_id, args, pop_signature=bytes(pop))
 
     @pytest.mark.asyncio
     async def test_server_constraint_rejects_out_of_bounds_path(self):
@@ -1990,6 +1990,87 @@ class TestServerConstraintsWithPoP:
 
         await self._call(server, warrant, holder.signing_key, {"path": "/data/report.txt"})
         assert outcomes() == ["deny", "allow"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("constraint", "allowed", "denied"),
+        [
+            pytest.param(
+                lambda core: core.UrlPattern("https://api.example.com/*"),
+                "https://api.example.com/report",
+                "https://evil.example/report",
+                id="url-pattern",
+            ),
+            pytest.param(
+                lambda core: core.AnyOf([core.Pattern("alpha-*"), core.Pattern("beta-*")]),
+                "alpha-report",
+                "gamma-report",
+                id="composite-any-of",
+            ),
+        ],
+    )
+    async def test_core_satisfies_constraints_are_enforced_with_pop(self, constraint, allowed, denied):
+        """Core constraints using satisfies() work in the A2A-local gate."""
+        core = pytest.importorskip("tenuo_core")
+        key = core.SigningKey.generate()
+        warrant = core.Warrant.mint(
+            keypair=key,
+            holder=key.public_key,
+            capabilities={"fetch": {"target": core.Pattern("*")}},
+            ttl_seconds=300,
+        )
+        server = A2AServer(
+            name="Core Constraint Agent",
+            url="https://core-constraints.example.com",
+            public_key="z6MkServer",
+            trusted_issuers=[key.public_key.to_bytes().hex()],
+            require_audience=False,
+            require_pop=True,
+            check_replay=False,
+            audit_log=None,
+        )
+
+        @server.skill("fetch", constraints={"target": constraint(core)})
+        async def fetch(target: str) -> str:
+            return target
+
+        assert await self._call(server, warrant, key, {"target": allowed}, "fetch") is not None
+        with pytest.raises(ConstraintViolationError):
+            await self._call(server, warrant, key, {"target": denied}, "fetch")
+
+    @pytest.mark.asyncio
+    async def test_malformed_core_constraint_input_records_deny_receipt(self):
+        """Invalid request data is a constraint denial, not an internal error."""
+        core = pytest.importorskip("tenuo_core")
+        from tenuo import HolderIdentity, Runtime
+
+        root = core.SigningKey.generate()
+        holder = HolderIdentity.generate()
+        warrant = core.Warrant.mint(
+            keypair=root,
+            holder=holder.public_key,
+            capabilities={"ping": {"ip": core.Pattern("*")}},
+            ttl_seconds=300,
+        )
+        runtime = Runtime(identity=holder, trusted_roots=[root.public_key], receipts="collect")
+        server = A2AServer(
+            name="Cidr Receipt Agent",
+            url="https://cidr-receipts.example.com",
+            public_key=holder.public_key.to_bytes().hex(),
+            trusted_issuers=[root.public_key.to_bytes().hex()],
+            require_audience=False,
+            check_replay=False,
+            audit_log=None,
+            runtime=runtime,
+        )
+
+        @server.skill("ping", constraints={"ip": core.Cidr("10.0.0.0/8")})
+        async def ping(ip: str) -> str:
+            return ip
+
+        with pytest.raises(ConstraintViolationError):
+            await self._call(server, warrant, holder.signing_key, {"ip": "not-an-ip"}, "ping")
+        assert [core.verify_receipt(r).outcome for r in runtime.peek_receipts()] == ["deny"]
 
 
 class TestBareConstraintClasses:

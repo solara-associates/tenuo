@@ -1340,7 +1340,20 @@ class A2AServer:
             for param, server_constraint in skill_def.constraints.items():
                 if param in arguments:
                     value = arguments[param]
-                    if not self._check_constraint(server_constraint, value, param):
+                    try:
+                        constraint_satisfied = self._check_constraint(server_constraint, value, param)
+                    except Exception as exc:
+                        # Core constraints use ValidationError for malformed input
+                        # (for example, a non-IP value passed to Cidr). That is an
+                        # authorization denial, not an adapter failure. Keep
+                        # configuration/programming errors such as
+                        # UnknownConstraintError distinct and fail closed.
+                        from tenuo.exceptions import ValidationError as _ValidationError
+
+                        if not isinstance(exc, _ValidationError):
+                            raise
+                        constraint_satisfied = False
+                    if not constraint_satisfied:
                         if enforcement is not None:
                             # The Authorizer allowed the call, so its receipt was
                             # held back; record this refusal instead.
@@ -1801,6 +1814,14 @@ class A2AServer:
         # Regex - regex matching (Rust core)
         if hasattr(constraint, "matches") and constraint_type == "Regex":
             return constraint.matches(value)
+
+        # The core's common constraint protocol. This covers constraints whose
+        # specialized Python method differs from the historical A2A dispatcher,
+        # including UrlPattern and composites such as AnyOf/All/Not. Keep this
+        # after the cases above so UrlSafe's list handling and existing type
+        # coercions remain backward compatible.
+        if hasattr(constraint, "satisfies"):
+            return bool(constraint.satisfies(value))
 
         # Type constraint (e.g., str, int)
         if isinstance(constraint, type):

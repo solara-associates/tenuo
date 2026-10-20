@@ -100,6 +100,7 @@ _DECISION_CODE_BY_ERROR_TYPE = {
     "untrusted_issuer": "untrusted-root",
     # Python-side categories with no Rust counterpart; not in Error::name()'s
     # vocabulary, and kept kebab-case so they cannot be mistaken for it.
+    "replay_detected": "replay-detected",
     "authorization_failed": "authorization-failed",
     "internal_error": "internal-error",
     "tenuo_error": "authorization-failed",
@@ -116,6 +117,7 @@ _POP_ESTABLISHED_ERROR_TYPES = frozenset(
         "policy_violation",
         "insufficient_approvals",
         "approval_gate_misconfigured",
+        "replay_detected",
     }
 )
 

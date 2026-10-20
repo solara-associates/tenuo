@@ -97,8 +97,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   approval gate. An approval-required response burned the warrant, so the
   retry with approvals failed with `replay_detected`, and a caller without
   the holder key could burn a copied warrant with a bad PoP. The jti is now
-  recorded only once the call is authorized to run, and a replayed call no
-  longer leaves a signed allow receipt behind.
+  recorded only once the call is authorized to run. A replayed call now
+  produces a signed `replay-detected` denial receipt instead of leaving a
+  false allow receipt behind.
 - **A2A server skill constraints apply with proof of possession.**
   Constraints declared with `@server.skill(..., constraints=...)` were only
   checked when `require_pop=False`, so with the default `require_pop=True` a

@@ -141,6 +141,7 @@ async def test_approval_required_response_does_not_consume_jti() -> None:
         assert replay["error"]["message"] == "replay_detected"
         assert len(ran) == 1
         assert _outcomes(runtime).count("allow") == 1
+        assert _outcomes(runtime)[-1] == "deny"
 
 
 @pytest.mark.asyncio
@@ -163,6 +164,7 @@ async def test_bad_pop_from_another_key_does_not_burn_warrant() -> None:
                 await client.send_task("go", warrant, skill="transfer", arguments=args, signing_key=HOLDER)
             assert len(ran) == 1
             assert _outcomes(runtime).count("allow") == 1
+            assert _outcomes(runtime)[-1] == "deny"
         finally:
             await client.close()
 
@@ -181,7 +183,7 @@ async def test_constraint_denial_does_not_burn_warrant() -> None:
 
 
 @pytest.mark.asyncio
-async def test_replay_after_server_constraint_denial_leaves_one_allow_receipt() -> None:
+async def test_replay_after_server_constraint_denial_records_replay_denial() -> None:
     args = {"amount": 5, "to": "acme"}
     with _serve(constraints={"to": Pattern("acme")}) as (url, ran, runtime):
         warrant = _warrant()
@@ -195,7 +197,10 @@ async def test_replay_after_server_constraint_denial_leaves_one_allow_receipt() 
         replay = await _post(url, warrant, args)
         assert replay["error"]["message"] == "replay_detected"
         assert ran == [("transfer", 5, "acme")]
-        assert _outcomes(runtime) == ["deny", "allow"]
+        receipts = [tenuo_core.verify_receipt(r) for r in runtime.peek_receipts()]
+        assert [receipt.outcome for receipt in receipts] == ["deny", "allow", "deny"]
+        assert receipts[-1].decision_code == "replay-detected"
+        assert receipts[-1].pop_signature is not None
 
 
 @pytest.mark.asyncio

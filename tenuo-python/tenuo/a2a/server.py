@@ -1389,6 +1389,27 @@ class A2AServer:
             if jti:
                 is_new = await self._replay_cache.check_and_add(jti, self.replay_window)
                 if not is_new:
+                    if enforcement is not None:
+                        # PoP and all authorization gates succeeded, but the
+                        # one-time warrant was already consumed. Record the
+                        # qualified denial rather than dropping the decision or
+                        # emitting the provisional allow.
+                        collect_enforcement_receipt(
+                            EnforcementResult(
+                                allowed=False,
+                                tool=skill_id,
+                                arguments=arguments,
+                                denial_reason="Warrant replay detected",
+                                error_type="replay_detected",
+                                warrant_id=enforcement.warrant_id,
+                                authorizer=enforcement.authorizer,
+                                presented_chain=[*(_resolved_chain_parents or []), warrant],
+                                verified_pop=pop_signature,
+                                pop_auth_args=arguments,
+                            ),
+                            None,
+                            runtime=runtime,
+                        )
                     raise ReplayDetectedError(jti)
 
         # Every gate, replay included, has passed: only now record the allow.

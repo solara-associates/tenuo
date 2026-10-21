@@ -92,7 +92,6 @@ Servers we've run this way:
 |---|---|---|
 | [mcp-atlassian](https://github.com/sooperset/mcp-atlassian) 0.23 | `python -m tenuo.mcp.wrap mcp-atlassian` | [jira-mcp-scoped-triage](https://github.com/tenuo-ai/tenuo-demos/tree/main/jira-mcp-scoped-triage) |
 | [Workspace MCP](https://github.com/taylorwilsdon/google_workspace_mcp) 2.1 | `python -m tenuo.mcp.wrap workspace-mcp --tools gmail` | [workspace-mcp-scoped-email](https://github.com/tenuo-ai/tenuo-demos/tree/main/workspace-mcp-scoped-email) |
-| [alpaca-mcp-server](https://github.com/alpacahq/alpaca-mcp-server) 2.4 | `python -m tenuo.mcp.wrap alpaca-mcp-server` | [alpaca-mcp-scoped-trading](https://github.com/tenuo-ai/tenuo-demos/tree/main/alpaca-mcp-scoped-trading) |
 
 Workspace MCP's code lives in top-level modules such as `main`, so run it from
 a directory that doesn't have its own `main.py`; `python -m` puts the current

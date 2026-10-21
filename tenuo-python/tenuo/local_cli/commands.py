@@ -206,6 +206,7 @@ def execute(opts, workspace):
                 ]
             }
         key = load_public_key(opts.file)
+        refuse_workspace_secret(workspace, opts.file, key)
         destination = workspace.path / "trust" / ((opts.name or fingerprint(key)) + ".pub")
         publish(destination, base64.b64encode(bytes(key.to_bytes())) + b"\n")
         return {"file": str(destination), "fingerprint": fingerprint(key)}
@@ -229,6 +230,22 @@ def execute(opts, workspace):
     if opts.command == "doctor":
         return {"checks": workspace.diagnostics()}
     raise DocumentError("unknown command")
+
+
+def refuse_workspace_secret(workspace, path, key):
+    """Trust files are shared as public data; never publish a workspace private key through one."""
+    import os
+
+    from .files import check_public_material, load_signing_key
+
+    source = os.stat(os.path.expanduser(path))
+    for private in sorted((workspace.path / "keys").glob("*.key")):
+        if os.path.samefile(path, private) or (source.st_ino, source.st_dev) == (
+            os.stat(private).st_ino,
+            os.stat(private).st_dev,
+        ):
+            raise DocumentError("trust input is a workspace private key; use its .pub file")
+        check_public_material(load_signing_key(private), [key])
 
 
 def warrant_command(opts, workspace):

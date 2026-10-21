@@ -745,8 +745,9 @@ def _observation_recorder(authority, forward=None):
                 event.tool,
                 event.arguments or {},
                 decision=decision,
-                reason=None if decision == "allow" else (event.constraint_violated or "denied"),
+                reason=None if decision == "allow" else ("constraint_violation" if event.constraint_violated else "denied"),
                 warrant_id=event.warrant_id or None,
+                argument=None if decision == "allow" else (event.constraint_violated or None),
                 run=event.workflow_run_id,
                 step="+".join(sorted(event.warrant_capabilities or [])) or None,
             )

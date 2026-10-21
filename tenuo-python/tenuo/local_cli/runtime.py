@@ -94,23 +94,24 @@ class LocalAuthority:
     def decide(self, tool, arguments):
         """The decision enforcement would make for this call, without blocking.
 
-        Returns ``(decision, reason, warrant_id)``: ``decision`` is ``"allow"``,
-        ``"deny"``, or ``None`` when there is no warrant to check against. A call
-        that needs approval is reported as a denial with reason
+        Returns ``(decision, reason, warrant_id, argument)``: ``decision`` is
+        ``"allow"``, ``"deny"``, or ``None`` when there is no warrant to check
+        against, and ``argument`` names the argument whose constraint failed. A
+        call that needs approval is reported as a denial with reason
         ``approval_required``; no approval request is written.
         """
         from tenuo._enforcement import enforce_tool_call
         from tenuo.approval import ApprovalRequired
 
         if self.warrant is None:
-            return None, "no_warrant", None
+            return None, "no_warrant", None, None
         warrant_id = None
         try:
             snapshot = self.snapshot(verify=False)
             if not snapshot.chain:
-                return None, "no_warrant", None
+                return None, "no_warrant", None, None
             if snapshot.key is None:
-                return None, "no_holder_key", None
+                return None, "no_holder_key", None, None
             warrant_id = str(snapshot.chain[-1].id)
             snapshot.authorizer.verify_chain(snapshot.chain)
             with self.scope(snapshot) as (current, session, _):
@@ -123,18 +124,21 @@ class LocalAuthority:
                     approval_handler=None,
                 )
         except ApprovalRequired:
-            return "deny", "approval_required", warrant_id
+            return "deny", "approval_required", warrant_id, None
         except Exception as exc:
-            return "deny", _kind(exc), warrant_id
+            return "deny", _kind(exc), warrant_id, None
         if result.allowed:
-            return "allow", None, warrant_id
-        return "deny", result.error_type or "denied", warrant_id
+            return "allow", None, warrant_id, None
+        return "deny", result.error_type or "denied", warrant_id, failed_argument(result)
 
-    def record(self, tool, arguments, *, decision=None, reason=None, warrant_id=None, run=None, step=None):
+    def record(
+        self, tool, arguments, *, decision=None, reason=None, warrant_id=None, argument=None, run=None, step=None
+    ):
         """Append one call to observations.jsonl in warrantgen's trace format.
 
         Lines carry ``run``, ``step``, ``tool`` and ``args`` as warrantgen reads
-        them, plus the observed decision. Argument values are written as given,
+        them, plus the observed decision and, for a constraint denial, the
+        ``argument`` whose constraint failed. Argument values are written as given,
         so the file is created readable by its owner only.
         """
         line = {
@@ -145,6 +149,7 @@ class LocalAuthority:
             "decision": decision,
             "reason": reason,
             "warrant_id": warrant_id,
+            "argument": argument,
             "observed_at": datetime.now(timezone.utc).isoformat(),
         }
         data = (json.dumps(line, default=str, allow_nan=False) + "\n").encode()
@@ -159,12 +164,19 @@ class LocalAuthority:
     def observe(self, tool, arguments, *, run=None, step=None):
         """Decide and record one call; never raises for a decision or a record."""
         try:
-            decision, reason, warrant_id = self.decide(tool, arguments)
+            decision, reason, warrant_id, argument = self.decide(tool, arguments)
         except Exception as exc:
-            decision, reason, warrant_id = None, _kind(exc), None
+            decision, reason, warrant_id, argument = None, _kind(exc), None, None
         try:
             return self.record(
-                tool, arguments, decision=decision, reason=reason, warrant_id=warrant_id, run=run, step=step
+                tool,
+                arguments,
+                decision=decision,
+                reason=reason,
+                warrant_id=warrant_id,
+                argument=argument,
+                run=run,
+                step=step,
             )
         except Exception:
             logging.getLogger(__name__).warning("Tenuo observe: could not record a call to %s", tool, exc_info=True)
@@ -267,6 +279,14 @@ class LocalAuthority:
                 logging.getLogger(__name__).warning("Local receipt persistence failed", exc_info=True)
             else:
                 runtime.acknowledge_receipts(len(receipts))
+
+
+def failed_argument(result):
+    """The argument a constraint denial failed on, by name; never its value."""
+    if getattr(result, "error_type", None) != "constraint_violation":
+        return None
+    name = getattr(result, "constraint_violated", None)
+    return name if isinstance(name, str) and name else None
 
 
 def _kind(exc):

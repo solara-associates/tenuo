@@ -193,7 +193,8 @@ def execute(opts, workspace):
             return {"file": opts.out, "message": "Edit the tool and argument names to match your application."}
         template = WarrantTemplate.load(opts.file)
         if opts.action == "validate":
-            return {"valid": True, "file": opts.file}
+            warnings = template_warnings(template.document)
+            return {"valid": True, "file": opts.file, **({"warnings": warnings} if warnings else {})}
         return {"template": template.expanded() if opts.expanded else template.document, "signed": False}
     if opts.command == "init":
         workspace.initialize(dev=opts.dev)
@@ -273,6 +274,22 @@ def refuse_workspace_secret(workspace, path, key):
         ):
             raise DocumentError("trust input is a workspace private key; use its .pub file")
         check_public_material(load_signing_key(private), [key])
+
+
+def template_warnings(document):
+    """Readable-syntax values that probably don't mean what they look like."""
+    warnings = []
+    for tool, arguments in (document.get("capabilities") or {}).items():
+        for argument, value in (arguments or {}).items() if isinstance(arguments, dict) else ():
+            items = value if isinstance(value, list) else [value]
+            for item in items:
+                if isinstance(item, str) and any(mark in item for mark in "*?"):
+                    kind = "one_of value" if isinstance(value, list) else "value"
+                    warnings.append(
+                        f"{tool}.{argument}: {item!r} is an exact {kind}, not a wildcard; "
+                        f"write {{pattern: {item!r}}} to match by pattern, or {{exact: {item!r}}} to keep it exact"
+                    )
+    return warnings
 
 
 def warrant_command(opts, workspace):

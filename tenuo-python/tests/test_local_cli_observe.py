@@ -223,11 +223,15 @@ def test_cli_mode_calls_and_doctor(observing, capsys):
         {
             "tool": "refund",
             "calls": 3,
+            "runs": 1,
             "would_allow": 2,
             "would_deny": 1,
-            "no_warrant": 0,
-            "arguments": ["amount_cents", "order_id"],
-            "deny_reasons": summary["tools"][0]["deny_reasons"],
+            "deny_reasons": {"constraint_violation": 1},
+            "denied_on": {"order_id": 1},
+            "arguments": {
+                "amount_cents": {"distinct": 1, "min": 10, "max": 10},
+                "order_id": {"distinct": 2, "values": ["A-1001", "OTHER"]},
+            },
         }
     ]
     status, listed = run("calls", "list", "--limit", "1")
@@ -258,7 +262,13 @@ def test_temporal_local_observe_maps_to_dry_run_and_records(observing):
     config.audit_callback(event)
     assert forwarded == [event]
     line = recorded(workspace)[0]
-    assert (line["run"], line["step"], line["decision"], line["reason"]) == ("run-1", "refund", "deny", "order_id")
+    assert (line["run"], line["step"], line["decision"], line["reason"], line["argument"]) == (
+        "run-1",
+        "refund",
+        "deny",
+        "constraint_violation",
+        "order_id",
+    )
     workspace.set_mode("enforce")
     assert TenuoPluginConfig.local(workspace.path).dry_run is False
 
@@ -316,3 +326,66 @@ def test_adapters_in_one_process_share_a_run_unless_tenuo_run_id_groups_them(obs
     lookup.invoke({"order_id": "A-2"})
     runs = [line["run"] for line in recorded(workspace)]
     assert runs[0] == runs[1] != "task-2" and runs[2] == "task-2"
+
+
+def test_constraint_denials_record_the_failing_argument_by_name(observing):
+    pytest.importorskip("langchain_core")
+    from tenuo.langchain import TenuoTool
+
+    workspace, path = observing
+    protected = TenuoTool.local(refund_tool([]), path=workspace.path, warrant=path)
+    protected.invoke({"order_id": "A-1001", "amount_cents": 99999})
+    protected.invoke({"order_id": "A-1001", "amount_cents": 5})
+    assert [line["argument"] for line in recorded(workspace)] == ["amount_cents", None]
+
+
+def test_verifier_observe_records_the_failing_argument(observing):
+    pytest.importorskip("mcp")
+    from tenuo.mcp import MCPVerifier
+    from tenuo_core import sign_meta
+
+    workspace, path = observing
+    chain, agent = load_chain(path), workspace.signing_key("agent")
+    args = {"order_id": "OTHER", "amount_cents": 5}
+    meta = {"tenuo": sign_meta(chain, agent, "refund", json.dumps(args), int(time.time()))}
+    MCPVerifier.local(path=workspace.path).verify("refund", args, meta=meta)
+    line = recorded(workspace)[0]
+    assert (line["decision"], line["reason"], line["argument"]) == ("deny", "constraint_violation", "order_id")
+
+
+def test_summary_describes_argument_values_across_runs(observing, monkeypatch, capsys):
+    pytest.importorskip("langchain_core")
+    from tenuo.langchain import TenuoTool
+
+    workspace, _ = observing
+    protected = TenuoTool.local(refund_tool([]), path=workspace.path)
+    for run, order in enumerate(("ORD-100", "ORD-205", "ORD-311")):
+        monkeypatch.setenv("TENUO_RUN_ID", f"task-{run}")
+        protected.invoke({"order_id": order, "amount_cents": 500})
+    capsys.readouterr()
+    assert main(["--home", str(workspace.path), "--json", "calls", "summary"]) == 0
+    row = json.loads(capsys.readouterr().out)["tools"][0]
+    assert row["no_warrant"] == 3 and row["runs"] == 3
+    assert row["arguments"] == {
+        "amount_cents": {"distinct": 1, "same_in_every_run": True, "min": 500, "max": 500},
+        "order_id": {
+            "distinct": 3,
+            "same_in_every_run": False,
+            "values": ["ORD-100", "ORD-205", "ORD-311"],
+            "common_prefix": "ORD-",
+        },
+    }
+
+
+def test_template_validate_warns_about_wildcards_in_exact_values(tmp_path, capsys):
+    path = tmp_path / "t.yaml"
+    path.write_text(
+        "version: 2\nttl: 5m\ncapabilities:\n"
+        "  get_order:\n    order_id: A-*\n"
+        "  list_files:\n    path: {pattern: /data/*}\n    kind: [csv, '*.tsv']\n"
+    )
+    assert main(["--home", str(tmp_path / ".tenuo"), "--json", "template", "validate", "--file", str(path)]) == 0
+    warnings = json.loads(capsys.readouterr().out)["warnings"]
+    assert len(warnings) == 2
+    assert warnings[0].startswith("get_order.order_id: 'A-*' is an exact value")
+    assert warnings[1].startswith("list_files.kind: '*.tsv' is an exact one_of value")

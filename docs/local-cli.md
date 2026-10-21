@@ -129,6 +129,10 @@ one order and a bounded refund. Use real registered tool and argument names.
 Loading a template does not grant any authority. Changing it does not change
 previously issued warrants.
 
+A plain string is an exact value, so `order_id: A-*` matches only the literal
+`A-*`. `template validate` warns about a plain string or `one_of` entry that
+contains `*` or `?`; write `{pattern: A-*}` to match by pattern.
+
 ```yaml
 version: 2
 name: refunds
@@ -382,12 +386,24 @@ Calls go to `observations.jsonl` in the workspace, one JSON object per line,
 created readable by its owner only because it holds argument values. Each line
 has `run`, `step`, `tool` and `args`, the format
 [warrantgen](https://github.com/RajanChavada/warrantgen) reads to draft
-a template from recorded calls, plus `decision`, `reason`, `warrant_id` and
+a template from recorded calls, plus `decision`, `reason`, `warrant_id`,
+`argument` (for a constraint denial, the name of the argument that failed) and
 `observed_at`. `run` is one process, or the Temporal workflow run; set
 `TENUO_RUN_ID` to group calls differently, for example one value per task in a
 long-lived agent.
 Pass `step=` to `TenuoTool.local`, `SecureMCPClient.local` or
 `MCPVerifier.local` to group calls that will share one warrant.
+
+`tenuo-cli calls summary` counts the recorded calls per tool: how many ran, in
+how many runs, what enforcement would have decided and why, and which
+arguments denials failed on (`denied_on`). For each argument it shows how many
+distinct values it took, the minimum and maximum of numbers, the values
+themselves when there are five or fewer strings and any prefix they share, and
+whether every run used the same values (`same_in_every_run`). An argument that
+differs between runs usually belongs in the warrant issued for each task; one
+that never changes can be fixed in the template. The summary is plain counting
+over the file; it does not suggest a policy. `tenuo-cli calls list` shows the
+recorded calls themselves.
 
 Observe mode writes no signed receipts: receipts don't yet record the mode, so
 an observed denial would read as an enforced one.

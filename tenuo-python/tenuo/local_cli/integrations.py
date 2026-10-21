@@ -164,6 +164,7 @@ def local_mcp_verifier(*, path=None, key=None, step=None, **kwargs):
     def observe(tool_name, arguments, meta):
         """Record the call and the verifier's decision, then let it run."""
         from tenuo.mcp.server import _coerce_meta
+        from .runtime import _kind, failed_argument
 
         args = dict(arguments) if isinstance(arguments, dict) else {}
         envelope = args.pop("_tenuo", None)
@@ -172,7 +173,7 @@ def local_mcp_verifier(*, path=None, key=None, step=None, **kwargs):
         except Exception:
             resolved = None
         presented = envelope is not None or (resolved is not None and resolved.get("tenuo") is not None)
-        decision, reason, warrant_id = None, "no_warrant", None
+        decision, reason, warrant_id, argument = None, "no_warrant", None, None
         if presented:
             try:
                 with authority.scope() as (snapshot, _, _):
@@ -181,14 +182,15 @@ def local_mcp_verifier(*, path=None, key=None, step=None, **kwargs):
                 decision = "allow" if result.allowed else "deny"
                 reason = None if result.allowed else (result.error_type or "denied")
                 warrant_id = result.warrant_id
+                argument = failed_argument(result)
                 if result.allowed:
                     args = dict(result.clean_arguments)
             except Exception as exc:
-                from .runtime import _kind
-
                 decision, reason = "deny", _kind(exc)
         try:
-            authority.record(tool_name, args, decision=decision, reason=reason, warrant_id=warrant_id, step=step)
+            authority.record(
+                tool_name, args, decision=decision, reason=reason, warrant_id=warrant_id, argument=argument, step=step
+            )
         except Exception:
             import logging
 

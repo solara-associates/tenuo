@@ -407,9 +407,11 @@ def test_summary_reads_paths_as_folders_skips_prose_and_prints_next_commands(obs
     by_tool = {row["tool"]: row["arguments"] for row in summary["tools"]}
     assert by_tool["read_file"]["path"]["common_prefix"] == "/data/reports/"
     assert by_tool["write_file"]["content"] == {"distinct": 2, "same_in_every_run": False, "free_text": True}
-    assert summary["next"][0] == (
-        f"warrantgen template {workspace.path / 'observations.jsonl'} --step hermes --from-run nightly-1 --out hermes.yaml"
-    )
+    calls = workspace.path / "observations.jsonl"
+    assert summary["next"][:2] == [
+        f"warrantgen template {calls} --step hermes --standing --ttl 7d --out hermes.yaml   # one warrant for every run",
+        f"warrantgen template {calls} --step hermes --from-run nightly-1 --out hermes.yaml   # or a warrant per task",
+    ]
     assert summary["next"][-1] == "tenuo-cli mode enforce"
 
 

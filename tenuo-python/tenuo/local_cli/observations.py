@@ -114,16 +114,17 @@ def summarize_calls(workspace, *, path=None, tool=None):
 
 
 def _next_steps(calls_path, steps):
-    """The exact commands to draft a template per step, from its most recent run."""
+    """The exact commands to draft, check and issue a template per step, then enforce."""
     if not steps:
         return ["Run your agent with tenuo-cli mode observe, then run tenuo-cli calls summary again"]
     out = []
     for step, run_times in sorted(steps.items()):
         latest = max(run_times.items(), key=lambda item: (item[1], str(item[0])))[0]
-        command = ["warrantgen", "template", str(calls_path), "--step", step]
-        if latest is not None:
-            command += ["--from-run", str(latest)]
-        out.append(" ".join(shlex.quote(part) for part in command + ["--out", f"{step}.yaml"]))
+        base = ["warrantgen", "template", str(calls_path), "--step", step]
+        target = ["--out", f"{step}.yaml"]
+        out.append(_command(base + ["--standing", "--ttl", "7d"] + target) + "   # one warrant for every run")
+        if latest is not None and len(run_times) > 1:
+            out.append(_command(base + ["--from-run", str(latest)] + target) + "   # or a warrant per task")
         out.append(f"tenuo-cli template validate --file {shlex.quote(step + '.yaml')}")
         out.append(
             f"tenuo-cli warrant issue --template {shlex.quote(step + '.yaml')} --holder agent"
@@ -131,6 +132,10 @@ def _next_steps(calls_path, steps):
         )
     out.append("tenuo-cli mode enforce")
     return out
+
+
+def _command(parts):
+    return " ".join(shlex.quote(part) for part in parts)
 
 
 def _describe(seen):

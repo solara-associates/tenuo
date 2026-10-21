@@ -294,3 +294,25 @@ async def test_mcp_client_and_stdio_server_both_observe(observing, tmp_path, wit
         assert decisions == [("A-1001", "allow"), ("A-1001", "allow"), ("OTHER", "deny"), ("OTHER", "deny")]
     else:
         assert decisions == [("A-1001", "none"), ("A-1001", "none"), ("OTHER", "none"), ("OTHER", "none")]
+
+
+def test_adapters_in_one_process_share_a_run_unless_tenuo_run_id_groups_them(observing, monkeypatch):
+    pytest.importorskip("langchain_core")
+    from langchain_core.tools import tool
+    from tenuo.langchain import TenuoTool
+
+    workspace, _ = observing
+
+    @tool
+    def get_order(order_id: str) -> str:
+        """Look up an order."""
+        return "ok"
+
+    lookup = TenuoTool.local(get_order, path=workspace.path)
+    refund = TenuoTool.local(refund_tool([]), path=workspace.path)
+    lookup.invoke({"order_id": "A-1"})
+    refund.invoke({"order_id": "A-1", "amount_cents": 1})
+    monkeypatch.setenv("TENUO_RUN_ID", "task-2")
+    lookup.invoke({"order_id": "A-2"})
+    runs = [line["run"] for line in recorded(workspace)]
+    assert runs[0] == runs[1] != "task-2" and runs[2] == "task-2"

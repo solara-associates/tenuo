@@ -383,7 +383,9 @@ created readable by its owner only because it holds argument values. Each line
 has `run`, `step`, `tool` and `args`, the format
 [warrantgen](https://github.com/RajanChavada/warrantgen) reads to draft
 a template from recorded calls, plus `decision`, `reason`, `warrant_id` and
-`observed_at`. `run` is one adapter instance, or the Temporal workflow run.
+`observed_at`. `run` is one process, or the Temporal workflow run; set
+`TENUO_RUN_ID` to group calls differently, for example one value per task in a
+long-lived agent.
 Pass `step=` to `TenuoTool.local`, `SecureMCPClient.local` or
 `MCPVerifier.local` to group calls that will share one warrant.
 

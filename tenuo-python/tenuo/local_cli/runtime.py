@@ -26,6 +26,9 @@ class Snapshot:
 
 
 OBSERVATIONS = "observations.jsonl"
+# One run per process unless TENUO_RUN_ID groups calls differently, so every
+# adapter in an agent run records the same run for warrantgen.
+_PROCESS_RUN = uuid.uuid4().hex
 
 
 class LocalAuthority:
@@ -45,7 +48,6 @@ class LocalAuthority:
         self.workspace = Workspace(path)
         self.warrant = Path(warrant).expanduser() if warrant is not None else None
         self.key_name = key
-        self.run_id = uuid.uuid4().hex
         self._last_srl = None
         self._lock = threading.Lock()
         dev = " (development identities)" if self.workspace.config["dev_roots"] else ""
@@ -74,6 +76,11 @@ class LocalAuthority:
     def observing(self):
         """True when the workspace config says ``mode: observe``; reread on every call."""
         return self.workspace.config["mode"] == "observe"
+
+    @property
+    def run_id(self):
+        """The run calls are recorded under: TENUO_RUN_ID, else one per process."""
+        return os.environ.get("TENUO_RUN_ID") or _PROCESS_RUN
 
     @property
     def observations_path(self):

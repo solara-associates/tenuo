@@ -123,9 +123,15 @@ def _normalize_parent_chain(
     carry ``[*parents, leaf]``.
     """
     parents = list(warrant_chain)
-    if parents and bytes(parents[-1].to_bytes()) == bytes(warrant.to_bytes()):
+    warrant_bytes = bytes(warrant.to_bytes())
+    if parents and bytes(parents[-1].to_bytes()) == warrant_bytes:
         _warn_legacy_chain(operation)
         parents.pop()
+    if any(bytes(parent.to_bytes()) == warrant_bytes for parent in parents):
+        raise TenuoContextError(
+            f"{operation}: warrant_chain lists parent warrants only; "
+            "do not include the leaf warrant except as the final legacy entry."
+        )
     return parents
 
 

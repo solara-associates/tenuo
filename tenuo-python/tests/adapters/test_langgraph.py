@@ -152,6 +152,30 @@ class TestGuardWrapper:
         result = wrapped(state)
         assert result == {"result": "done"}
 
+    def test_compiled_graph_passes_config_and_runtime(self, registry):
+        """Through compile().invoke(), the key comes from config and ``runtime`` still reaches the node."""
+        pytest.importorskip("langgraph.runtime")
+        from langgraph.graph import END, START, StateGraph
+        from langgraph.runtime import Runtime
+
+        warrant, key = Warrant.quick_mint(tools=["search"], ttl=3600)
+        registry.register("worker", key)  # deliberately no "default" key
+        seen = {}
+
+        def my_agent(state: MockState, runtime: Runtime) -> Dict[str, Any]:
+            seen["runtime"] = runtime
+            return {"result": "done"}
+
+        graph = StateGraph(MockState)
+        graph.add_node("node", guard_node(my_agent))
+        graph.add_edge(START, "node")
+        graph.add_edge("node", END)
+
+        out = graph.compile().invoke({"warrant": warrant}, config=make_config("worker"))
+
+        assert out["result"] == "done"
+        assert isinstance(seen["runtime"], Runtime)
+
 
 class TestTenuoNode:
     """Tests for @tenuo_node decorator (explicit access)."""

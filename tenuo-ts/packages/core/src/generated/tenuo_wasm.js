@@ -971,13 +971,11 @@ exports.parse_strict_json = parse_strict_json;
 
 /**
  * Decode and check an approval envelope. Not authorization.
- * @param {string} envelope
+ * @param {any} envelope
  * @returns {any}
  */
 function sdkInspectApproval(envelope) {
-    const ptr0 = passStringToWasm0(envelope, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.sdkInspectApproval(ptr0, len0);
+    const ret = wasm.sdkInspectApproval(envelope);
     if (ret[2]) {
         throw takeFromExternrefTable0(ret[1]);
     }

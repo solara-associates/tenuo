@@ -434,7 +434,7 @@ config = TenuoPluginConfig(
     max_chain_depth=10,                        # Max delegation depth
     audit_callback=on_audit,                   # Optional audit event handler
     metrics=TenuoMetrics(),                    # Optional Prometheus metrics
-    authorized_signals=["approve"],            # Worker-wide. A name off the list fails the workflow.
+    authorized_signals=["approve"],            # Worker-wide. A name off the list is dropped.
     authorized_updates=["update_config"],      # Worker-wide. A name off the list rejects that update.
 )
 ```
@@ -613,6 +613,48 @@ This section covers the full threat model, trust boundaries, PoP windows, dedup,
 5. **Over-broad credentials**: Short TTLs, delegation / `workflow_grant` for least privilege, signal/update guards.
 6. **Mis-signing (named vs positional args)**: `strict_mode=True` fails fast on ambiguous PoP.
 
+### Limiting a capability to a workflow
+
+By default a warrant is scoped by its holder key, TTL and argument constraints,
+not by the workflow it was issued for: any workflow whose worker holds the
+holder key can use it until it expires. To limit a capability to one logical
+workflow, or a family of workflows, constrain both parts of Temporal's workflow
+identity using the reserved `_workflow_namespace` and `_workflow_id` arguments:
+
+```python
+warrant = (
+    Warrant.mint_builder()
+    .holder(agent_key.public_key)
+    .capability(
+        "issue_refund",
+        order_id=Exact("order-123"),
+        amount=Range(max=250),
+        _workflow_namespace=Exact("payments-prod"),
+        _workflow_id=Exact("refund-order-123"),  # or Pattern("refund-order-123*")
+    )
+    .ttl(600)
+    .mint(control_key)
+)
+```
+
+For a capability that names both fields, the outbound interceptor signs the
+running workflow's namespace and ID from `workflow.info()`, and the activity
+interceptor verifies them against `activity.info()`. Both come from Temporal;
+activity arguments cannot use either reserved name. A capability that names
+only one field fails closed because workflow IDs are unique only within a
+namespace. Capabilities that name neither field behave exactly as before.
+
+- `Pattern("refund-order-123*")` admits child workflows and Schedule triggers
+  whose IDs share the prefix. Attenuation can narrow it, e.g. to a child's
+  `Exact` ID, but never widen it.
+- It applies to activities. Child workflow starts, Nexus operations and signal or
+  update guards don't read it.
+- The client that starts a workflow chooses its ID, so this keeps authority to a
+  named logical workflow in one namespace and fails closed when headers reach
+  the wrong one; it is not proof of who started it. Who may start workflows is
+  governed by Temporal namespace access control, and a reject-duplicate ID reuse
+  policy stops a closed workflow's ID from being reused.
+
 ### Clock skew and PoP time windows
 
 Verification checks PoP using multiple aligned time windows around the verifier's clock:
@@ -778,7 +820,11 @@ config = TenuoPluginConfig(
 
 `authorized_signals` and `authorized_updates` are optional settings on the worker config. One worker uses one pair of lists for every workflow it runs. Leave them unset (`None`, the default) and every signal and update name is allowed. Queries are not checked.
 
-With `authorized_signals` set, a name that is not on the list raises `TemporalConstraintViolation` during signal handling, including a signal that arrives with the first workflow task. The plugin registers that exception as a workflow failure type, so the signal fails the workflow run. A caller who can send a signal can end the run by choosing a name that is not on the list. Set the list when that outcome is acceptable. Workflows that need different names need separate worker configs.
+With `authorized_signals` set, a signal whose name is not on the list is dropped before it reaches the workflow, including a signal that arrives with the first workflow task. The run continues. The drop is decided again on replay, so adding or removing a name changes how signals already in history replay; treat a change to the list like a workflow code change. Workflows that need different names need separate worker configs.
+
+Each drop emits a DENY `TemporalAuditEvent` with `tool="signal:<name>"` and the warrant id (`activity_name` and `activity_id` are empty), and increments the denied metric when `metrics` is set. The metric uses the fixed tool label `signal:<unlisted>`, since the sender picks the signal name; the event and the log line keep the real name.
+
+The metric update happens inline and is skipped on replay. The audit event is placed on a bounded, non-blocking worker queue; a daemon dispatcher invokes `audit_callback` outside workflow code, so normal sinks may perform I/O without violating the Temporal sandbox or blocking the workflow thread. Callback delivery is **best-effort**: a worker crash can lose queued events, and a full queue drops the new event. Queue overflows are counted inline and reported later by the dispatcher thread, so even a blocking logging handler cannot stall the workflow. Callback and metric failures are logged without changing the signal drop. Configure `audit_callback` before constructing the worker; mutating the callback afterward is unsupported.
 
 With `authorized_updates` set, the same check runs in the update validator when the update defines one, and in the update handler for every update, including an update with no validator. That failure rejects the update.
 

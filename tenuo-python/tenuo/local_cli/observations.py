@@ -124,10 +124,12 @@ def _next_steps(calls_path, steps):
         if latest is not None:
             command += ["--from-run", str(latest)]
         out.append(" ".join(shlex.quote(part) for part in command + ["--out", f"{step}.yaml"]))
-    out += [
-        "tenuo-cli template validate --file STEP.yaml, then tenuo-cli warrant issue --template STEP.yaml --holder agent",
-        "tenuo-cli mode enforce",
-    ]
+        out.append(f"tenuo-cli template validate --file {shlex.quote(step + '.yaml')}")
+        out.append(
+            f"tenuo-cli warrant issue --template {shlex.quote(step + '.yaml')} --holder agent"
+            f" --out {shlex.quote(step + '.warrant')}"
+        )
+    out.append("tenuo-cli mode enforce")
     return out
 
 

@@ -49,6 +49,11 @@ def expanded_constraint(value):
         return {"one_of": value}
     if not isinstance(value, dict) or len(value) != 1:
         raise DocumentError("constraint needs a string, a string list, or one explicit typed mapping")
+    if "optional" in value:
+        inner = value["optional"]
+        if isinstance(inner, dict) and "optional" in inner:
+            raise DocumentError("optional cannot wrap another optional")
+        return {"optional": expanded_constraint(inner)}
     return copy.deepcopy(value)
 
 
@@ -58,6 +63,11 @@ def compile_constraint(value):
 
     document = expanded_constraint(value)
     kind, argument = next(iter(document.items()))
+    if kind == "optional":
+        # The argument may be left out; if it is sent, it must satisfy the inner constraint.
+        from tenuo import Optional
+
+        return Optional(compile_constraint(argument))
     if kind == "wildcard" and argument is True:
         return Wildcard()
     if kind == "range":

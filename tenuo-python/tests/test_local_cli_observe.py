@@ -389,3 +389,30 @@ def test_template_validate_warns_about_wildcards_in_exact_values(tmp_path, capsy
     assert len(warnings) == 2
     assert warnings[0].startswith("get_order.order_id: 'A-*' is an exact value")
     assert warnings[1].startswith("list_files.kind: '*.tsv' is an exact one_of value")
+
+
+def test_summary_reads_paths_as_folders_skips_prose_and_prints_next_commands(observing, monkeypatch, capsys):
+    workspace, _ = observing
+    from tenuo.local_cli.runtime import LocalAuthority
+
+    authority = LocalAuthority(path=workspace.path, announce=False)
+    for run, quarter in enumerate(("q2", "q3")):
+        authority.record("read_file", {"path": f"/data/reports/{quarter}.csv"}, run=f"nightly-{run}", step="hermes")
+        authority.record(
+            "write_file", {"path": f"/data/out/{quarter}.md", "content": f"# {quarter} summary\n"},
+            run=f"nightly-{run}", step="hermes",
+        )
+    assert main(["--home", str(workspace.path), "--json", "calls", "summary"]) == 0
+    summary = json.loads(capsys.readouterr().out)
+    by_tool = {row["tool"]: row["arguments"] for row in summary["tools"]}
+    assert by_tool["read_file"]["path"]["common_prefix"] == "/data/reports/"
+    assert by_tool["write_file"]["content"] == {"distinct": 2, "same_in_every_run": False, "free_text": True}
+    assert summary["next"][0] == (
+        f"warrantgen template {workspace.path / 'observations.jsonl'} --step hermes --from-run nightly-1 --out hermes.yaml"
+    )
+    assert summary["next"][-1] == "tenuo-cli mode enforce"
+
+
+def test_init_points_to_observe_first(tmp_path, capsys):
+    assert main(["--home", str(tmp_path / ".tenuo"), "--json", "init", "--dev"]) == 0
+    assert "tenuo-cli mode observe" in json.loads(capsys.readouterr().out)["message"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 
 from .files import DocumentError
@@ -45,6 +46,7 @@ def list_calls(workspace, *, path=None, tool=None, limit=100):
 
 
 MAX_LISTED_VALUES = 5
+FREE_TEXT_LEN = 80
 
 
 def summarize_calls(workspace, *, path=None, tool=None):
@@ -55,10 +57,14 @@ def summarize_calls(workspace, *, path=None, tool=None):
     """
     tools = {}
     runs = set()
+    steps = {}
+    calls_path = Path(path) if path else workspace.path / OBSERVATIONS
     for call in read_calls(workspace, path):
         if tool is not None and call["tool"] != tool:
             continue
         runs.add(call.get("run"))
+        step = call.get("step") or "default"
+        steps.setdefault(step, {})[call.get("run")] = call.get("observed_at") or ""
         entry = tools.setdefault(
             call["tool"],
             {
@@ -103,8 +109,26 @@ def summarize_calls(workspace, *, path=None, tool=None):
         "tools": rows,
         "calls": sum(row["calls"] for row in rows),
         "runs": len(runs),
-        "next": "Draft a warrant from these calls with warrantgen, then run tenuo-cli mode enforce",
+        "next": _next_steps(calls_path, steps),
     }
+
+
+def _next_steps(calls_path, steps):
+    """The exact commands to draft a template per step, from its most recent run."""
+    if not steps:
+        return ["Run your agent with tenuo-cli mode observe, then run tenuo-cli calls summary again"]
+    out = []
+    for step, run_times in sorted(steps.items()):
+        latest = max(run_times.items(), key=lambda item: (item[1], str(item[0])))[0]
+        command = ["warrantgen", "template", str(calls_path), "--step", step]
+        if latest is not None:
+            command += ["--from-run", str(latest)]
+        out.append(" ".join(shlex.quote(part) for part in command + ["--out", f"{step}.yaml"]))
+    out += [
+        "tenuo-cli template validate --file STEP.yaml, then tenuo-cli warrant issue --template STEP.yaml --holder agent",
+        "tenuo-cli mode enforce",
+    ]
+    return out
 
 
 def _describe(seen):
@@ -122,12 +146,22 @@ def _describe(seen):
         out["min"], out["max"] = min(numbers), max(numbers)
     strings = sorted({v for v in values if isinstance(v, str)})
     if strings and len(strings) == len(keys):
+        if any(_free_text(v) for v in strings):
+            out["free_text"] = True
+            return out
         if len(strings) <= MAX_LISTED_VALUES:
             out["values"] = strings
         prefix = _common_prefix(strings)
+        if prefix and all("/" in v for v in strings):
+            prefix = prefix[: prefix.rfind("/") + 1]  # a shared folder, not part of a name
         if len(strings) > 1 and prefix:
             out["common_prefix"] = prefix
     return out
+
+
+def _free_text(value):
+    """Prose rather than an identifier: whitespace, or long without a path separator."""
+    return any(c.isspace() for c in value) or (len(value) > FREE_TEXT_LEN and "/" not in value)
 
 
 def _common_prefix(strings):

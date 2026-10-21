@@ -401,8 +401,11 @@ distinct values it took, the minimum and maximum of numbers, the values
 themselves when there are five or fewer strings and any prefix they share, and
 whether every run used the same values (`same_in_every_run`). An argument that
 differs between runs usually belongs in the warrant issued for each task; one
-that never changes can be fixed in the template. The summary is plain counting
-over the file; it does not suggest a policy. `tenuo-cli calls list` shows the
+that never changes can be fixed in the template. Strings with whitespace are
+marked `free_text` rather than listed, and a prefix shared by paths stops at a
+folder. The summary is plain counting over the file; it does not suggest a
+policy. It ends with the exact `warrantgen template` command for each recorded
+step, from that step's latest run, and the commands that follow. `tenuo-cli calls list` shows the
 recorded calls themselves.
 
 Observe mode writes no signed receipts: receipts don't yet record the mode, so

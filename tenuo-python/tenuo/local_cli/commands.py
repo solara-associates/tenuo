@@ -200,7 +200,11 @@ def execute(opts, workspace):
         workspace.initialize(dev=opts.dev)
         return {
             "home": str(workspace.path),
-            "message": "Local files ready. Next: issue a warrant from a YAML template.",
+            "message": (
+                "Local files ready. Next: tenuo-cli mode observe, run your agent, then tenuo-cli calls summary."
+                if opts.dev
+                else "Local files ready. Next: add an issuer with tenuo-cli trust add, then tenuo-cli mode observe."
+            ),
             "development": opts.dev,
         }
     workspace.config

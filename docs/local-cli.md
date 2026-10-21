@@ -275,7 +275,9 @@ each call the adapter reloads the selected warrant, trust and revocation files,
 verifies the full chain, and checks the holder. Missing or malformed data denies
 that call. Rollbacks below the accepted SRL version are refused for the lifetime
 of that adapter; this does not persist a version floor across process restarts.
-Replacing the selected file therefore needs no agent restart. Updating files
+Replacing the selected file therefore needs no agent restart:
+`tenuo-cli warrant issue --template T.yaml --holder agent --out agent.warrant --replace`
+swaps it atomically, and the next call uses the new warrant. Updating files
 is an operator action: an agent must not be able to edit them.
 
 Approval-gated calls write requests under `~/.tenuo/requests/`. The approval CLI's

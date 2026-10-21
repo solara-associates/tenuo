@@ -80,8 +80,10 @@ def compile_constraint(value):
             raise DocumentError("range min must not exceed max")
         return Range(low, high)
     if kind == "one_of":
-        if not isinstance(argument, list) or not argument or not all(isinstance(v, str) for v in argument):
-            raise DocumentError("one_of needs a nonempty list of strings")
+        # Strings or integers: tools send IDs such as PR numbers as JSON numbers.
+        if (not isinstance(argument, list) or not argument
+                or not all(isinstance(v, str) or (isinstance(v, int) and not isinstance(v, bool)) for v in argument)):
+            raise DocumentError("one_of needs a nonempty list of strings or integers")
         return OneOf(argument)
     constructors = {"exact": Exact, "pattern": Pattern, "subpath": Subpath, "regex": Regex, "url_pattern": UrlPattern}
     if kind in constructors and isinstance(argument, str) and "\x00" not in argument:

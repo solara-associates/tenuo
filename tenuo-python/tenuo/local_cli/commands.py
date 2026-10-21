@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import sys
 
 import yaml
@@ -20,6 +21,17 @@ from .files import (
     update_revocations,
 )
 from .workspace import Workspace
+
+# Integrations add a command group under their own name, the way kubectl and gh
+# take plugins: a package registers a `tenuo.cli` entry point whose function
+# receives the rest of the command line. Known ones get an install hint.
+KNOWN_INTEGRATIONS = {"hermes": "hermes-tenuo"}
+
+
+def integrations():
+    from importlib.metadata import entry_points
+
+    return {entry.name: entry for entry in entry_points(group="tenuo.cli")}
 
 
 def parser():
@@ -114,7 +126,23 @@ def parser():
         sub.add_argument("--yes", action="store_true")
         if action == "deny":
             sub.add_argument("--reason", required=True)
+    for integration in sorted(set(integrations()) | set(KNOWN_INTEGRATIONS)):
+        if integration in commands.choices:
+            continue
+        sub = commands.add_parser(integration, add_help=False, help=f"Commands from {KNOWN_INTEGRATIONS.get(integration, integration)}")
+        sub.add_argument("args", nargs=argparse.REMAINDER)
     return root
+
+
+def run_integration(opts):
+    entry = integrations().get(opts.command)
+    if entry is None:
+        package = KNOWN_INTEGRATIONS[opts.command]
+        print(f"tenuo-cli {opts.command} comes with {package}: pip install {package}", file=sys.stderr)
+        return 2
+    if opts.home:
+        os.environ["TENUO_HOME"] = opts.home
+    return entry.load()(opts.args) or 0
 
 
 def execute(opts, workspace):
@@ -351,6 +379,8 @@ def warrant_command(opts, workspace):
 
 def main(argv=None):
     opts = parser().parse_args(argv)
+    if hasattr(opts, "args"):
+        return run_integration(opts)
     try:
         result = execute(opts, Workspace(opts.home))
         status = result.pop("exit_code", 1 if any(c["status"] == "error" for c in result.get("checks", [])) else 0)

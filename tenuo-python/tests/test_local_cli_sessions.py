@@ -1,6 +1,8 @@
 """Unsigned attachments route signed grants without activating or revoking them."""
 
 
+import os
+
 import pytest
 
 from tenuo import SigningKey, WarrantTemplate
@@ -53,10 +55,31 @@ def test_wrong_holder_and_manifest_identity_are_rejected(session):
         read_session(workspace, "chat-a")
 
 
-def test_session_commands_belong_to_the_integration(session, capsys):
+def test_session_commands_belong_to_the_integration(session, capsys, monkeypatch):
     workspace, _ = session
-    # Sessions are a Hermes concept: hermes-tenuo owns the commands, tenuo.local the library.
+    # Sessions are a Hermes concept: the integration adds `tenuo-cli hermes session`,
+    # tenuo.local is the library it builds on.
     from tenuo.local import attach, detach, list_sessions, read_session  # noqa: F401
+    from tenuo.local_cli import commands
+
     with pytest.raises(SystemExit):
         main(["--home", str(workspace.path), "session", "list"])
 
+    monkeypatch.setattr(commands, "integrations", lambda: {})
+    assert main(["hermes", "session", "list"]) == 2
+    assert "pip install hermes-tenuo" in capsys.readouterr().err
+
+    seen = []
+
+    class Entry:
+        def load(self):
+            return lambda argv: seen.append((argv, os.environ.get("TENUO_HOME"))) or 0
+
+    monkeypatch.delenv("TENUO_HOME", raising=False)
+    monkeypatch.setattr(commands, "integrations", lambda: {"hermes": Entry(), "init": Entry()})
+    assert main(["--home", str(workspace.path), "hermes", "session", "attach", "--session", "s", "--help"]) == 0
+    assert seen == [(["session", "attach", "--session", "s", "--help"], str(workspace.path))]
+    # An integration can't take over a built-in command: this is the real init,
+    # refusing the existing workspace.
+    assert main(["--home", str(workspace.path), "init", "--dev"]) == 1
+    assert len(seen) == 1

@@ -404,8 +404,10 @@ differs between runs usually belongs in the warrant issued for each task; one
 that never changes can be fixed in the template. Strings with whitespace are
 marked `free_text` rather than listed, and a prefix shared by paths stops at a
 folder. The summary is plain counting over the file; it does not suggest a
-policy. It ends with the exact `warrantgen template` command for each recorded
-step, from that step's latest run, and the commands that follow. `tenuo-cli calls list` shows the
+policy. It ends with the exact `warrantgen template` commands for each recorded
+step and the commands that follow: `--standing` drafts one warrant that covers
+every run seen (a cron job, a shared server, a long chat), `--from-run` a
+warrant for one run's task. `tenuo-cli calls list` shows the
 recorded calls themselves.
 
 Observe mode writes no signed receipts: receipts don't yet record the mode, so

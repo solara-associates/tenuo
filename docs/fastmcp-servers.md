@@ -38,6 +38,30 @@ The full runnable version is in
 
 ```bash
 uv pip install "tenuo[fastmcp]" mcp-atlassian
+tenuo-cli init --dev && tenuo-cli mode observe
+python -m tenuo.mcp.wrap --home ~/.tenuo mcp-atlassian
+```
+
+With `--home`, the wrapper reads trust, revocations and the mode from a
+[`tenuo-cli` workspace](local-cli.md) on every call. In observe mode every call
+runs, from any MCP client, and is recorded to the workspace's
+`observations.jsonl` under the server's name (`--step` to change it). Use the
+server for a while, then:
+
+```bash
+tenuo-cli calls summary        # tools and arguments it was called with, and the commands to draft a warrant
+tenuo-cli mode enforce         # the next call is checked; no restart
+```
+
+In enforce mode every call must carry a warrant, so the client has to present
+one: `SecureMCPClient.local`, Hermes with hermes-tenuo, or a framework MCP
+adapter with Tenuo ([calling it](#calling-it)). Claude Desktop and Cursor don't
+send warrants, so with them the server is useful in observe mode only. Pass
+`--key NAME` to sign receipts with a server identity from the workspace.
+
+Without a workspace, give the wrapper the issuer's public key instead:
+
+```bash
 TENUO_TRUSTED_ROOT=<hex public key> python -m tenuo.mcp.wrap mcp-atlassian
 ```
 

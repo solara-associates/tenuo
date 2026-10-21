@@ -1,6 +1,13 @@
 """Run an existing FastMCP server with Tenuo checking every tool call.
 
+    python -m tenuo.mcp.wrap --home ~/.tenuo mcp-atlassian --transport stdio
     TENUO_TRUSTED_ROOT=<hex public key> python -m tenuo.mcp.wrap mcp-atlassian --transport stdio
+
+With ``--home``, trust, revocations and the mode come from a ``tenuo-cli``
+workspace and are reread on every call: in ``mode: observe`` every call runs
+and is recorded to the workspace's observations.jsonl, under the server's name
+as the step, for drafting a warrant. ``tenuo-cli mode enforce`` turns the check
+on without restarting the server.
 
 The first argument is the server's console script (``mcp-atlassian``) or a
 ``module:function`` entrypoint; everything after it is passed to the server
@@ -126,6 +133,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         description="Run an existing FastMCP server with Tenuo checking every tool call.",
     )
     parser.add_argument(
+        "--home",
+        metavar="DIR",
+        help="tenuo-cli workspace for trust, revocations and enforce/observe mode (default: none)",
+    )
+    parser.add_argument("--step", help="with --home, the step observed calls are recorded under (default: SERVER)")
+    parser.add_argument("--key", help="with --home, a server identity in the workspace that signs receipts")
+    parser.add_argument(
         "--trusted-root",
         action="append",
         default=[],
@@ -137,15 +151,25 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     args = parser.parse_args(argv)
 
     try:
-        roots = _parse_roots(args.trusted_root or [os.environ.get(_ENV_ROOT, "")])
-        if not roots:
-            raise WrapError(f"no trusted root: pass --trusted-root or set {_ENV_ROOT}")
-
-        from tenuo_core import Authorizer
-
         from .server import MCPVerifier
 
-        verifier = MCPVerifier(authorizer=Authorizer(trusted_roots=roots), require_warrant=True)
+        if args.home:
+            if args.trusted_root:
+                raise WrapError("--home reads trust from the workspace; drop --trusted-root")
+            step = args.step or args.server.rpartition(":")[0] or args.server
+            verifier = MCPVerifier.local(path=args.home, key=args.key, step=step)
+        else:
+            if args.step or args.key:
+                raise WrapError("--step and --key need --home")
+            roots = _parse_roots(args.trusted_root or [os.environ.get(_ENV_ROOT, "")])
+            if not roots:
+                raise WrapError(
+                    f"no trust configured: pass --home with a tenuo-cli workspace, or --trusted-root / {_ENV_ROOT}"
+                )
+
+            from tenuo_core import Authorizer
+
+            verifier = MCPVerifier(authorizer=Authorizer(trusted_roots=roots), require_warrant=True)
         guard_fastmcp_servers(verifier)
         entrypoint = _resolve_entrypoint(args.server)
     except WrapError as exc:

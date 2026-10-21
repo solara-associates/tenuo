@@ -102,7 +102,7 @@ def test_requires_a_trusted_root() -> None:
     env.pop("TENUO_TRUSTED_ROOT", None)
     result = _wrap("fastmcp_wrap_server:main", env=env)
     assert result.returncode == 2
-    assert "no trusted root" in result.stderr
+    assert "no trust configured" in result.stderr and "--home" in result.stderr
 
 
 def test_unknown_console_script() -> None:
@@ -132,3 +132,48 @@ def test_find_wrap_error_looks_inside_exception_groups() -> None:
     except RuntimeError as outer:
         assert _find_wrap_error(outer) is refused
     assert _find_wrap_error(ValueError("x")) is None
+
+
+@pytest.mark.skipif(not FASTMCP_SERVER_AVAILABLE, reason=FASTMCP_SERVER_SKIP_REASON)
+@pytest.mark.asyncio
+async def test_home_observes_any_client_then_enforces_without_a_restart(tmp_path: Path) -> None:
+    """With --home, a plain MCP client works in observe mode; tenuo-cli mode enforce applies on the next call."""
+    import json
+
+    from fastmcp import Client
+    from fastmcp.client.transports import StdioTransport
+
+    from tenuo.local_cli.workspace import Workspace
+
+    home = tmp_path / ".tenuo"
+    workspace = Workspace(home)
+    workspace.initialize(dev=True)
+    workspace.set_mode("observe")
+    log = tmp_path / "calls.log"
+    log.touch()
+    transport = StdioTransport(
+        command=sys.executable,
+        args=["-m", "tenuo.mcp.wrap", "--home", str(home), "fastmcp_wrap_server:main"],
+        env=_env(WRAP_TEST_LOG=str(log)),
+    )
+    async with Client(transport) as client:
+        await client.call_tool("comment", {"issue_key": "OPS-12", "body": "fixed"})
+        workspace.set_mode("enforce")
+        refused = await client.call_tool("comment", {"issue_key": "OPS-13", "body": "x"}, raise_on_error=False)
+        assert refused.is_error
+    assert log.read_text().splitlines() == ["OPS-12 fixed"]
+    lines = [json.loads(line) for line in (home / "observations.jsonl").read_text().splitlines()]
+    assert [(line["step"], line["tool"], line["args"], line["decision"]) for line in lines] == [
+        ("fastmcp_wrap_server", "comment", {"issue_key": "OPS-12", "body": "fixed"}, None)
+    ]
+
+
+def test_home_and_trusted_root_are_exclusive(tmp_path: Path) -> None:
+    from tenuo.local_cli.workspace import Workspace
+
+    home = tmp_path / ".tenuo"
+    Workspace(home).initialize(dev=True)
+    result = _wrap("--home", str(home), "--trusted-root", "00" * 32, "fastmcp_wrap_server:main", env=_env())
+    assert result.returncode == 2 and "drop --trusted-root" in result.stderr
+    result = _wrap("--step", "x", "fastmcp_wrap_server:main", env=_env(TENUO_TRUSTED_ROOT="00" * 32))
+    assert result.returncode == 2 and "need --home" in result.stderr

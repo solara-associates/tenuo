@@ -97,8 +97,10 @@ def parser():
             continue
         sub.add_argument("--out")
         sub.add_argument("--no-store", action="store_true")
+        sub.add_argument("--replace", action="store_true", help="swap an existing --out file")
     issue.add_argument("--out")
     issue.add_argument("--no-store", action="store_true")
+    issue.add_argument("--replace", action="store_true", help="swap an existing --out file")
     warrants.add_parser("list")
     sessions = commands.add_parser("session").add_subparsers(dest="action", required=True)
     sessions.add_parser("list")
@@ -327,7 +329,7 @@ def warrant_command(opts, workspace):
             issuer=opts.key,
             parent=load_chain(opts.parent) if opts.parent else None,
         )
-        return {"warrant": describe(chain), "files": save(workspace, chain, out=opts.out, store=not opts.no_store)}
+        return {"warrant": describe(chain), "files": save(workspace, chain, out=opts.out, store=not opts.no_store, replace=opts.replace)}
     if opts.action == "list":
         entries, errors = [], []
         for path in sorted((workspace.path / "warrants").glob("*.warrant")):
@@ -366,7 +368,7 @@ def warrant_command(opts, workspace):
         issuer=opts.key,
         holder=workspace.public_key(opts.holder) if opts.holder else None,
     )
-    return {"warrant": describe(chain), "files": save(workspace, chain, out=opts.out, store=not opts.no_store)}
+    return {"warrant": describe(chain), "files": save(workspace, chain, out=opts.out, store=not opts.no_store, replace=opts.replace)}
 
 
 def main(argv=None):

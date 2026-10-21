@@ -101,8 +101,8 @@ directory first on the import path.
 
 If you'd rather not patch at session start, add the middleware to the
 server's FastMCP object yourself and call its entrypoint. This needs a
-module-level server object; servers that build theirs at startup (Alpaca's
-`build_server()`) need the wrapper.
+module-level server object; servers that build theirs at startup (in a
+`build_server()` factory, say) need the wrapper.
 
 ```python
 import os

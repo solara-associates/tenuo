@@ -102,16 +102,6 @@ def parser():
     issue.add_argument("--no-store", action="store_true")
     issue.add_argument("--replace", action="store_true", help="swap an existing --out file")
     warrants.add_parser("list")
-    sessions = commands.add_parser("session").add_subparsers(dest="action", required=True)
-    sessions.add_parser("list")
-    for action in ("show", "attach", "detach"):
-        sub = sessions.add_parser(action)
-        sub.add_argument("--session", required=True)
-        if action == "attach":
-            sub.add_argument("--file", required=True)
-            sub.add_argument("--holder", default="agent")
-        if action == "detach":
-            sub.add_argument("--id", required=True, type=name)
     approvals = commands.add_parser("approval").add_subparsers(dest="action", required=True)
     for action in ("show", "approve", "deny"):
         sub = approvals.add_parser(action)
@@ -135,18 +125,6 @@ def execute(opts, workspace):
                              authorizers=opts.authorizer, warrant=getattr(opts, "warrant", None),
                              denied=getattr(opts, "denied", False), since=getattr(opts, "since", None),
                              limit=getattr(opts, "limit", 100))
-    if opts.command == "session":
-        from .sessions import attach, detach, list_sessions, read_session
-        from .warrants import load_chain
-
-        workspace.config
-        if opts.action == "list":
-            return {"sessions": list_sessions(workspace)}
-        if opts.action == "attach":
-            return {"session": attach(workspace, opts.session, load_chain(opts.file), holder=opts.holder)}
-        if opts.action == "detach":
-            return {"session": detach(workspace, opts.session, opts.id)}
-        return {"session": read_session(workspace, opts.session)}
     if opts.command == "approval":
         from .approvals import read_request, sign_response
         from .warrants import decode_chain

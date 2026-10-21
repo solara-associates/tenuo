@@ -36,7 +36,7 @@ The default workspace is `~/.tenuo/`, outside your project. Change it with
 | `trust/*.pub` | Trusted roots: issuer public keys the verifier accepts |
 | `revocations.srl` | Core signed revocation list in native CBOR |
 | `warrants/` | Issued warrant chains |
-| `sessions/` | Explicit operator-controlled session attachments |
+| `sessions/` | Session attachments, managed by the integration (e.g. `hermes-tenuo session`) |
 | `requests/`, `approvals/` | Portable requests and responses |
 | `observations.jsonl` | Calls recorded in observe mode, with argument values |
 
@@ -463,14 +463,10 @@ they remain bounded by their signed expiry and the verifiers' revocation data.
 
 ## Session attachments
 
-For a session-based agent, issuance and attachment are different operations:
-
-```bash
-tenuo-cli session attach --session chat-a --file ~/.tenuo/agent.warrant
-tenuo-cli session list
-tenuo-cli session show --session chat-a
-tenuo-cli session detach --session chat-a --id tnu_wrt_REAL_ID
-```
+For a session-based agent, issuance and attachment are different operations.
+Sessions belong to the integration, so the integration's CLI manages them; for
+Hermes that's `hermes-tenuo session attach|list|show|detach` (see hermes-tenuo).
+Code uses `tenuo.local.attach`, `detach`, `read_session` and `list_sessions`.
 
 Use the session identifier reported by the integration. Attachment verifies the
 chain and the selected agent's **public** key (`--holder agent` by default),

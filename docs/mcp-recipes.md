@@ -20,14 +20,25 @@ anyone about anything until you revoke it.
 version: 2
 name: reply-to-thread
 ttl: 1h
+vars:
+  me: {description: "your Google account email"}
+  thread: {description: "the Gmail thread ID"}
+  to: {description: "who the reply may go to, lowercase (a list for several)"}
 capabilities:
-  get_gmail_thread_content: {user_google_email: you@yourco.com, thread_id: 18f2a9c0d1e2b3a4}
+  get_gmail_thread_content:
+    user_google_email: ${me}
+    thread_id: ${thread}
+    body_format: {optional: any}
+    include_analysis: {optional: any}
   send_gmail_message:
-    user_google_email: you@yourco.com
-    thread_id: 18f2a9c0d1e2b3a4
-    to: bob@vendor.com
+    user_google_email: ${me}
+    thread_id: ${thread}
+    to: ${to}
     subject: any
     body: any
+    in_reply_to: {optional: any}
+    references: {optional: any}
+    body_format: {optional: [plain, html]}
 ```
 
 Workspace MCP is built on FastMCP, so the server checks every call itself:
@@ -35,7 +46,8 @@ Workspace MCP is built on FastMCP, so the server checks every call itself:
 ```bash
 tenuo-cli init --dev && tenuo-cli mode observe
 python -m tenuo.mcp.wrap --home ~/.tenuo workspace-mcp --tools gmail
-tenuo-cli warrant issue --template reply.yaml --holder agent --out reply.warrant
+tenuo-cli warrant issue --template reply.yaml --holder agent --out reply.warrant \
+  --set me=you@yourco.com --set thread=18f2a9c0d1e2b3a4 --set to=bob@vendor.com
 tenuo-cli mode enforce
 ```
 
@@ -56,18 +68,20 @@ Checked against workspace-mcp's own tools:
 The GitHub MCP server is written in Go, so `tenuo.mcp.wrap` can't sit inside
 it. Agents running in Hermes get these through hermes-tenuo, which checks the
 call before Hermes sends it:
-[fix an issue](https://github.com/tenuo-ai/hermes-tenuo/tree/main/recipes/fix-issue)
-(one issue, its own branch, never `main`, never a merge) and
-[review a PR](https://github.com/tenuo-ai/hermes-tenuo/tree/main/recipes/review-pr)
-(a second agent's warrant issued from the first with `--from`, read and comment
-only). For other clients, the same YAML without Hermes' `mcp__github__` prefix
-works wherever a Tenuo check sits in front of the server.
+[work on issues](https://github.com/tenuo-ai/hermes-tenuo/tree/main/hermes_tenuo/recipes/work-on-issues)
+(one repository: `agent/*` branches, pull requests into `main`, never a merge,
+never another repository) and
+[review PRs](https://github.com/tenuo-ai/hermes-tenuo/tree/main/hermes_tenuo/recipes/review-prs)
+(the PRs you name, comments only, held by a second agent's key). For other
+clients, the same YAML without Hermes' `mcp__github__` prefix works wherever a
+Tenuo check sits in front of the server.
 
 ## Tool names
 
 Recipes use the server's own tool and argument names. Hermes registers MCP tools
 as `mcp__<server>__<tool>`, so a Hermes warrant writes `mcp__google_workspace__send_gmail_message`
 where a direct client writes `send_gmail_message`. Every argument a warrant
-names must be present and match, every argument it doesn't name is refused,
-and `{}` after a tool allows any arguments. In observe mode, `tenuo-cli calls
+names must be present and match, unless it's wrapped in `{optional: …}`; every
+argument it doesn't name is refused; and `{}` after a tool allows any
+arguments. In observe mode, `tenuo-cli calls
 summary` shows the names and arguments your agent actually sends.

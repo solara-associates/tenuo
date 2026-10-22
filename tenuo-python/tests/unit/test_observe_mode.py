@@ -117,7 +117,8 @@ def test_observe_allows_constraint_violation_and_logs(caplog):
     assert rec.arg_types == {"payee": "str", "amount": "int"}
     assert rec.error_type == "constraint_violation"
     assert rec.constraint_violated == "payee"
-    assert rec.denial_reason == result.denial_reason
+    assert not hasattr(rec, "denial_reason")  # free text can quote argument values
+    assert rec.getMessage() == "OBSERVE: would deny issue_payout: constraint_violation on 'payee'"
     assert rec.warrant_id == result.warrant_id
 
 
@@ -299,3 +300,60 @@ def test_guard_runs_an_expired_warrant_in_observe_and_refuses_it_in_enforce(capl
         assert issue_payout(payee="ACCT-CLAIMANT", amount=100) == "paid"
     assert calls == ["ACCT-CLAIMANT"]
     assert _observe_records(caplog), "the expiry is recorded as an observed denial"
+
+
+def test_observe_gate_still_verifies_the_warrant_before_recording_approval_required():
+    """A gated call with an untrusted issuer is recorded as that, not as approval_required."""
+    _observe()
+    stranger = SigningKey.generate()
+    untrusted = (
+        Warrant.mint_builder()
+        .capability("issue_payout", payee=Exact("ACCT-CLAIMANT"), amount=Range(0, 5000))
+        .approval_gates({"issue_payout": {"amount": {"exempt": Range(0, 1000)}}})
+        .required_approvers([APPROVER.public_key])
+        .min_approvals(1)
+        .holder(AGENT.public_key)
+        .ttl(3600)
+        .mint(stranger)
+    )
+    for call in (enforce_tool_call, enforce_tool_call_async):
+        result = call("issue_payout", GATED_ARGS, untrusted.bind(AGENT, trusted_roots=ROOTS),
+                      trusted_roots=ROOTS, approval_handler=_never_called)
+        if asyncio.iscoroutine(result):
+            result = asyncio.run(result)
+        assert result.allowed and result.observed
+        assert result.error_type != "approval_required", result.error_type
+
+
+def test_observe_records_an_invalid_approval_instead_of_aborting(caplog):
+    from tenuo.approval import sign_approval
+
+    seen: List[Any] = []
+
+    def wrong_signer(request: Any) -> Any:
+        seen.append(request)
+        return sign_approval(request, SigningKey.generate())
+
+    configure(trusted_roots=ROOTS)
+    bound = GATED.bind(AGENT, trusted_roots=ROOTS)
+    # Collect a real but wrongly signed approval in enforce mode, then present it while observing.
+    try:
+        enforce_tool_call("issue_payout", GATED_ARGS, bound, trusted_roots=ROOTS, approval_handler=wrong_signer)
+    except Exception:
+        pass
+    assert seen, "the handler should have produced an approval to present"
+    bad = sign_approval(seen[0], SigningKey.generate())
+    _observe()
+    with caplog.at_level(logging.WARNING, logger="tenuo"):
+        result = enforce_tool_call("issue_payout", GATED_ARGS, bound, trusted_roots=ROOTS, approvals=[bad])
+    assert result.allowed and result.observed
+    assert result.error_type in ("invalid_approval", "approval_expired", "insufficient_approvals")
+
+
+def test_observe_logs_one_warning_for_an_integrity_failure(caplog):
+    _observe()
+    forged = bytes(WARRANT.sign(SigningKey.generate(), "issue_payout", BAD_ARGS, int(time.time())))
+    with caplog.at_level(logging.WARNING, logger="tenuo"):
+        _inbound(BAD_ARGS, forged)
+    call_warnings = [r for r in caplog.records if r.levelno >= logging.WARNING and r.name != "tenuo.config"]
+    assert [r.getMessage() for r in call_warnings] == ["OBSERVE: would deny issue_payout: invalid_pop"]

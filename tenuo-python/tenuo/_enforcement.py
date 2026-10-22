@@ -514,8 +514,11 @@ def _log_chain_enforcement_denial(
     error_type: Optional[str],
 ) -> None:
     """Log authorization denials from chain/sign paths at the right severity."""
+    from .config import should_block_violation
+
     msg = f"Authorization denied for {tool_name}: {exc}"
-    if error_type in ("invalid_pop", "revoked", "untrusted_issuer"):
+    # In observe mode _apply_observe_mode logs the one warning for this call.
+    if error_type in ("invalid_pop", "revoked", "untrusted_issuer") and should_block_violation():
         logger.warning(msg)
     else:
         logger.debug(msg)
@@ -704,6 +707,32 @@ def _observed_approval_gate(
         pop_auth_args=pop_auth_args,
         authorizer=authorizer,
         approval_metadata={"min_approvals": threshold},
+    )
+
+
+def _observed_approval_failure(
+    exc: BaseException,
+    tool_name: str,
+    tool_args: Dict[str, Any],
+    warrant_id: Optional[str],
+    presented_chain: Optional[Any],
+    pop_auth_args: Optional[Dict[str, Any]],
+) -> Optional[EnforcementResult]:
+    """In observe mode, an invalid or expired approval is a recorded denial, not an abort."""
+    from .config import should_block_violation
+
+    if should_block_violation() or not isinstance(exc, (InvalidApproval, ApprovalExpired)):
+        return None
+    error_type = "approval_expired" if isinstance(exc, ApprovalExpired) else "invalid_approval"
+    return EnforcementResult(
+        allowed=False,
+        tool=tool_name,
+        arguments=tool_args,
+        denial_reason=error_type.replace("_", " "),
+        error_type=error_type,
+        warrant_id=warrant_id,
+        presented_chain=presented_chain,
+        pop_auth_args=pop_auth_args,
     )
 
 
@@ -1121,6 +1150,10 @@ def _enforce_tool_call_impl(
         # Transport approvals (MCP _approvals, headers) are only consumed when
         # this call's gate fires. Otherwise they must not reach Rust validate().
         _gate_approvals: Optional[List[Any]] = None
+        # Observe mode at an approval gate: no handler is asked; the core still
+        # verifies trust, expiry, revocation and PoP, and only reaching the gate
+        # is recorded as approval_required (see the ApprovalRequired handlers).
+        _observe_gate: Optional[EnforcementResult] = None
         _raw_pop_args = pop_args if pop_args is not None else tool_args
         _raw_constraint_args = (
             constraint_args if constraint_args is not None else tool_args
@@ -1170,19 +1203,18 @@ def _enforce_tool_call_impl(
 
             # Collect and verify approvals — raises if missing or invalid.
             # Returns verified SignedApproval objects to pass to validate().
-            _would_require = _observed_approval_gate(
+            _observe_gate = _observed_approval_gate(
                 tool_name, tool_args, warrant_id, _gate_threshold, approvals,
                 _presented_chain, _pop_auth_args,
                 authorizer if authorizer is not None else _auth,
             )
-            if _would_require is not None:
-                return _would_require
 
-            _gate_approvals = _collect_approvals_for_approval_gate(
-                tool_name, _pop_auth_args, bound_warrant,
-                _gate_approvers, _gate_threshold,
-                approval_handler, approvals,
-            )
+            if _observe_gate is None:
+                _gate_approvals = _collect_approvals_for_approval_gate(
+                    tool_name, _pop_auth_args, bound_warrant,
+                    _gate_approvers, _gate_threshold,
+                    approval_handler, approvals,
+                )
 
         if verify_mode == "sign":
             # ─────────────────────────────────────────────────────────────────
@@ -1412,6 +1444,8 @@ def _enforce_tool_call_impl(
         )
 
     except InsufficientApprovals as e:
+        if _observe_gate is not None:  # verified up to the gate; record that it needs approval
+            return _observe_gate
         # Multi-sig threshold not met — structurally different from a scope
         # denial.  Preserve got/need so integrations emit the correct signal.
         logger.debug(f"Insufficient approvals for {tool_name}: {e}")
@@ -1431,9 +1465,14 @@ def _enforce_tool_call_impl(
                 "need": e.details.get("required", 0) if hasattr(e, "details") else 0,
             },
         )
-    except (InvalidApproval, ApprovalExpired, ApprovalGateTriggered):
-        raise
+    except (InvalidApproval, ApprovalExpired, ApprovalGateTriggered) as e:
+        observed = _observed_approval_failure(e, tool_name, tool_args, warrant_id, _presented_chain, _pop_auth_args)
+        if observed is None:
+            raise
+        return observed
     except ApprovalRequired as e:
+        if _observe_gate is not None:  # verified up to the gate; record that it needs approval
+            return _observe_gate
         if verify_mode == "sign":
             raise
         mapped = _enforcement_result_from_chain_error(
@@ -1610,6 +1649,10 @@ async def _enforce_tool_call_async_impl(
         # Transport approvals (MCP _approvals, headers) are only consumed when
         # this call's gate fires. Otherwise they must not reach Rust validate().
         _gate_approvals: Optional[List[Any]] = None
+        # Observe mode at an approval gate: no handler is asked; the core still
+        # verifies trust, expiry, revocation and PoP, and only reaching the gate
+        # is recorded as approval_required (see the ApprovalRequired handlers).
+        _observe_gate: Optional[EnforcementResult] = None
         _raw_pop_args = pop_args if pop_args is not None else tool_args
         _raw_constraint_args = (
             constraint_args if constraint_args is not None else tool_args
@@ -1649,19 +1692,18 @@ async def _enforce_tool_call_async_impl(
                     authorizer=authorizer if authorizer is not None else _auth,
                 )
 
-            _would_require = _observed_approval_gate(
+            _observe_gate = _observed_approval_gate(
                 tool_name, tool_args, warrant_id, _gate_threshold, approvals,
                 _presented_chain, _pop_auth_args,
                 authorizer if authorizer is not None else _auth,
             )
-            if _would_require is not None:
-                return _would_require
 
-            _gate_approvals = await _collect_approvals_for_approval_gate_async(
-                tool_name, _pop_auth_args, bound_warrant,
-                _gate_approvers, _gate_threshold,
-                approval_handler, approvals,
-            )
+            if _observe_gate is None:
+                _gate_approvals = await _collect_approvals_for_approval_gate_async(
+                    tool_name, _pop_auth_args, bound_warrant,
+                    _gate_approvers, _gate_threshold,
+                    approval_handler, approvals,
+                )
 
         _chain_result: Optional[Any] = None
 
@@ -1852,6 +1894,8 @@ async def _enforce_tool_call_async_impl(
         )
 
     except InsufficientApprovals as e:
+        if _observe_gate is not None:  # verified up to the gate; record that it needs approval
+            return _observe_gate
         logger.debug(f"Insufficient approvals for {tool_name}: {e}")
         return EnforcementResult(
             allowed=False, tool=tool_name, arguments=tool_args,
@@ -1867,9 +1911,14 @@ async def _enforce_tool_call_async_impl(
                 "need": e.details.get("required", 0) if hasattr(e, "details") else 0,
             },
         )
-    except (InvalidApproval, ApprovalExpired, ApprovalGateTriggered):
-        raise
+    except (InvalidApproval, ApprovalExpired, ApprovalGateTriggered) as e:
+        observed = _observed_approval_failure(e, tool_name, tool_args, warrant_id, _presented_chain, _pop_auth_args)
+        if observed is None:
+            raise
+        return observed
     except ApprovalRequired as e:
+        if _observe_gate is not None:  # verified up to the gate; record that it needs approval
+            return _observe_gate
         if verify_mode == "sign":
             raise
         mapped = _enforcement_result_from_chain_error(
@@ -2014,15 +2063,18 @@ def _apply_observe_mode(result: EnforcementResult) -> EnforcementResult:
     if result.allowed or should_block_violation():
         return result
     args = result.arguments or {}
+    # The category and the argument name, never the core's reason text, which
+    # can quote argument values (a malformed URL or CIDR, say).
+    category = result.error_type or "denied"
+    where = f" on '{result.constraint_violated}'" if result.constraint_violated else ""
     logger.warning(
-        f"OBSERVE: would deny {result.tool}: {result.denial_reason or result.error_type}",
+        f"OBSERVE: would deny {result.tool}: {category}{where}",
         extra={
             "tool": result.tool,
             "args_keys": list(args.keys()),
             "arg_types": {k: type(v).__name__ for k, v in args.items()},
             "error_type": result.error_type,
             "constraint_violated": result.constraint_violated,
-            "denial_reason": result.denial_reason,
             "warrant_id": result.warrant_id,
             "observed": True,
         },

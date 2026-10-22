@@ -317,3 +317,57 @@ def test_set_lists_read_like_the_template_file():
         parse_set(["commands=[pytest -q"])
     with pytest.raises(DocumentError, match="anchors and aliases"):
         parse_set(["x=[&a [1], *a]"])
+
+
+def test_literals_only_where_shorthand_is_read():
+    from tenuo import SigningKey
+    from tenuo.warrant_template import WarrantTemplate
+
+    doc = {"version": 2, "name": "${repo}", "ttl": "1h", "vars": {"repo": {}, "tool": {}},
+           "capabilities": {"${tool}": {
+               "repo": "${repo}",
+               "owner": {"exact": "${repo}"},
+               "branch": {"optional": "${repo}"},
+               "path": {"pattern": "${repo}/*"},
+           }}}
+    filled = WarrantTemplate(doc, values={"repo": "any", "tool": "issue_read"})
+    caps = filled.document["capabilities"]["issue_read"]
+    assert filled.document["name"] == "any"
+    assert caps["repo"] == {"exact": "any"}
+    assert caps["owner"] == {"exact": "any"}
+    assert caps["branch"] == {"optional": {"exact": "any"}}
+    assert caps["path"] == {"pattern": "any/*"}
+    issuer = SigningKey.generate()
+    filled.mint(issuer, issuer.public_key)
+
+
+def test_numbers_and_quoted_strings_from_set():
+    from tenuo import SigningKey
+    from tenuo.warrant_template import WarrantTemplate, parse_set
+
+    doc = {"version": 2, "name": "t", "ttl": "1h", "vars": {"pr": {}, "account": {}},
+           "capabilities": {"pull_request_read": {"pullNumber": "${pr}", "account": {"exact": "${account}"}}}}
+    values = parse_set(["pr=57", 'account="00123"'])
+    assert values == {"pr": 57, "account": "00123"}
+    issuer = SigningKey.generate()
+    warrant = WarrantTemplate(doc, values=values).mint(issuer, issuer.public_key)
+    caps = warrant.capabilities["pull_request_read"]
+    assert type(caps["pullNumber"]).__name__ == "Exact" and type(caps["account"]).__name__ == "Exact"
+
+
+def test_set_is_refused_for_a_signed_warrant(tmp_path, capsys):
+    import json
+
+    import yaml
+    from tenuo.local_cli import main
+
+    path = tmp_path / "t.yaml"
+    path.write_text(yaml.safe_dump(VARS))
+    home = ["--home", str(tmp_path / ".tenuo"), "--json"]
+    assert main([*home, "init", "--dev"]) == 0
+    assert main([*home, "warrant", "issue", "--template", str(path), "--holder", "agent", "--set",
+                 f"project={tmp_path}", "--out", str(tmp_path / "w.warrant")]) == 0
+    capsys.readouterr()
+    for action in ("show", "review"):
+        assert main([*home, "warrant", action, "--file", str(tmp_path / "w.warrant"), "--set", "project=/x"]) == 1
+        assert "not a signed warrant" in json.loads(capsys.readouterr().out)["error"]

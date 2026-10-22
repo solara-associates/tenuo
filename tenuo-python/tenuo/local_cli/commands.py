@@ -55,7 +55,9 @@ def split_integration(argv, builtins):
 
 
 def parser():
-    root = argparse.ArgumentParser(prog="tenuo-cli", description="Authorize agents locally from readable files.")
+    root = argparse.ArgumentParser(
+        prog="tenuo-cli", description="Authorize agents locally from readable files.", allow_abbrev=False
+    )
     root.add_argument("--home", help="Local workspace (default: TENUO_HOME or ~/.tenuo)")
     root.add_argument("--json", action="store_true", help="Print one JSON object to stdout")
     commands = root.add_subparsers(dest="command", required=True)

@@ -290,3 +290,30 @@ def test_review_details_repeat_set():
     finding = {"severity": "warning", "problem": "broad", "tool": "read_file"}
     shown = brief({"summary": "1 warning", "findings": [finding]}, "t.yaml", ["project=/srv/my app"])
     assert shown["details"] == "tenuo-cli warrant review --file t.yaml --set 'project=/srv/my app'"
+
+
+@pytest.mark.parametrize("value", ["any", "1..9"])
+def test_filled_in_strings_are_literal(value):
+    from tenuo.warrant_template import WarrantTemplate
+
+    doc = {"version": 2, "name": "t", "ttl": "1h", "vars": {"repo": {}},
+           "capabilities": {"issue_read": {"repo": "${repo}", "branch": "agent/${repo}", "labels": ["${repo}"]}}}
+    caps = WarrantTemplate(doc, values={"repo": value}).document["capabilities"]["issue_read"]
+    assert caps["repo"] == {"exact": value}
+    assert caps["labels"] == [value]
+    from tenuo import SigningKey
+
+    issuer = SigningKey.generate()
+    warrant = WarrantTemplate(doc, values={"repo": value}).mint(issuer, issuer.public_key)
+    assert type(warrant.capabilities["issue_read"]["repo"]).__name__ == "Exact"
+
+
+def test_set_lists_read_like_the_template_file():
+    from tenuo.local_cli.files import DocumentError
+    from tenuo.warrant_template import parse_set
+
+    assert parse_set(["days=[2026-10-22]"]) == {"days": ["2026-10-22"]}
+    with pytest.raises(DocumentError, match="not a valid list"):
+        parse_set(["commands=[pytest -q"])
+    with pytest.raises(DocumentError, match="anchors and aliases"):
+        parse_set(["x=[&a [1], *a]"])

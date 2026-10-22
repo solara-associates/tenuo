@@ -267,12 +267,21 @@ class LocalAuthority:
         if snapshot.key is None:
             yield snapshot, None, None
             return
-        identity = (bytes(snapshot.key.public_key.to_bytes()), tuple(bytes(r.to_bytes()) for r in snapshot.roots))
-        with self._lock:
-            if self._runtime_for != identity:
-                self._runtime = Runtime(HolderIdentity(snapshot.key), trusted_roots=snapshot.roots, receipts="collect")
-                self._runtime_for = identity
-            runtime = self._runtime
+        # Receipts don't yet say which mode signed them, so an observed denial
+        # would read as an enforced one. Observe mode keeps them out of the file,
+        # and uses a Runtime that signs none: a discarded receipt must not become
+        # the predecessor of the next one the chain persists.
+        persist = not self.observing
+        if persist:
+            identity = (bytes(snapshot.key.public_key.to_bytes()), tuple(bytes(r.to_bytes()) for r in snapshot.roots))
+            with self._lock:
+                if self._runtime_for != identity:
+                    self._runtime = Runtime(HolderIdentity(snapshot.key), trusted_roots=snapshot.roots,
+                                            receipts="collect")
+                    self._runtime_for = identity
+                runtime = self._runtime
+        else:
+            runtime = Runtime(HolderIdentity(snapshot.key), trusted_roots=snapshot.roots, receipts="off")
         runtime.apply_revocation_list(snapshot.srl)
         receipt_path = self.workspace.path / self.workspace.config["audit"]["receipts"]
         if not receipt_path.exists():
@@ -281,9 +290,6 @@ class LocalAuthority:
             except FileExistsError:
                 pass
         sink = FileReceiptSink(receipt_path)
-        # Receipts don't yet say which mode signed them, so an observed denial
-        # would read as an enforced one. Observe mode keeps them out of the file.
-        persist = not self.observing
         try:
             with runtime.bind():
                 if snapshot.chain:

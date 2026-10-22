@@ -36,7 +36,7 @@ The default workspace is `~/.tenuo/`, outside your project. Change it with
 | `trust/*.pub` | Trusted roots: issuer public keys the verifier accepts |
 | `revocations.srl` | Core signed revocation list in native CBOR |
 | `warrants/` | Issued warrant chains |
-| `sessions/` | Explicit operator-controlled session attachments |
+| `sessions/` | Session attachments, managed by the integration (e.g. `hermes-tenuo session`) |
 | `requests/`, `approvals/` | Portable requests and responses |
 | `observations.jsonl` | Calls recorded in observe mode, with argument values |
 
@@ -404,13 +404,19 @@ themselves when there are five or fewer strings and any prefix they share, and
 whether every run used the same values (`same_in_every_run`). An argument that
 differs between runs usually belongs in the warrant issued for each task; one
 that never changes can be fixed in the template. Strings with whitespace are
-marked `free_text` rather than listed, and a prefix shared by paths stops at a
-folder. The summary is plain counting over the file; it does not suggest a
-policy. It ends with the exact `warrantgen template` commands for each recorded
-step and the commands that follow: `--standing` drafts one warrant that covers
-every run seen (a cron job, a shared server, a long chat), `--from-run` a
-warrant for one run's task. `tenuo-cli calls list` shows the
-recorded calls themselves.
+marked `free_text`; they're still listed when there are five or fewer short
+ones (a handful of shell commands is exactly what a command allowlist needs),
+and otherwise the row points to `tenuo-cli calls list --tool NAME`. A prefix
+shared by paths stops at a folder. The summary is plain counting over the file;
+it does not suggest a policy. It ends with the commands for each recorded step:
+`tenuo-cli template new` to write a template from the summary, then validate,
+issue and enforce. Drafting from the log with
+[warrantgen](https://github.com/RajanChavada/warrantgen) is optional and
+installed separately; its commands are printed as comments
+(`uvx --from git+https://github.com/RajanChavada/warrantgen warrantgen template …`):
+`--standing` drafts one warrant that covers every run seen (a cron job, a shared
+server, a long chat), `--from-run` a warrant for one run's task.
+`tenuo-cli calls list` shows the recorded calls themselves.
 
 Observe mode writes no signed receipts: receipts don't yet record the mode, so
 an observed denial would read as an enforced one.
@@ -457,14 +463,10 @@ they remain bounded by their signed expiry and the verifiers' revocation data.
 
 ## Session attachments
 
-For a session-based agent, issuance and attachment are different operations:
-
-```bash
-tenuo-cli session attach --session chat-a --file ~/.tenuo/agent.warrant
-tenuo-cli session list
-tenuo-cli session show --session chat-a
-tenuo-cli session detach --session chat-a --id tnu_wrt_REAL_ID
-```
+For a session-based agent, issuance and attachment are different operations.
+Sessions belong to the integration, so the integration's CLI manages them; for
+Hermes that's `hermes-tenuo session attach|list|show|detach` (see hermes-tenuo).
+Code uses `tenuo.local.attach`, `detach`, `read_session` and `list_sessions`.
 
 Use the session identifier reported by the integration. Attachment verifies the
 chain and the selected agent's **public** key (`--holder agent` by default),

@@ -12,7 +12,7 @@ def local_langchain_tool(tool, *, path=None, warrant=None, key="agent", step=Non
     class LocalTool(TenuoTool):
         def _check_authorization(self, arguments):
             if authority.observing:
-                authority.observe(self.name, arguments, step=step,
+                authority.observe(self.name, arguments, step=step, via="langchain",
                                   require_constraints=self.strict, schemas=self._schemas)
                 return
             authority.require_warrant()
@@ -31,7 +31,7 @@ def local_langchain_tool(tool, *, path=None, warrant=None, key="agent", step=Non
 
         async def _acheck_authorization(self, arguments):
             if authority.observing:
-                authority.observe(self.name, arguments, step=step,
+                authority.observe(self.name, arguments, step=step, via="langchain",
                                   require_constraints=self.strict, schemas=self._schemas)
                 return
             authority.require_warrant()
@@ -80,7 +80,7 @@ def local_mcp_client(*, path=None, warrant=None, key="agent", step=None, **kwarg
             if not warrant_context or not (inject_warrant is None or inject_warrant is True or inject_warrant == "argument"):
                 raise DocumentError("local MCP calls cannot disable warrant enforcement or presentation")
             if authority.observing:
-                observed = authority.observe(tool_name, arguments, step=step, approvals=approvals)
+                observed = authority.observe(tool_name, arguments, step=step, via="mcp", approvals=approvals)
                 # Present the warrant when there is a live one, so the server
                 # can check it too; never authorize or block here. An expired
                 # warrant isn't presented: the client would refuse the call.
@@ -193,7 +193,8 @@ def local_mcp_verifier(*, path=None, key=None, step=None, **kwargs):
                 decision, reason = "deny", _kind(exc)
         try:
             authority.record(
-                tool_name, args, decision=decision, reason=reason, warrant_id=warrant_id, argument=argument, step=step
+                tool_name, args, decision=decision, reason=reason, warrant_id=warrant_id, argument=argument, step=step,
+                via="mcp-server",
             )
         except Exception:
             import logging

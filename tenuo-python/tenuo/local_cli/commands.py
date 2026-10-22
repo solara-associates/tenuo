@@ -108,7 +108,7 @@ def parser():
     for action in ("validate", "show"):
         template = templates.add_parser(action)
         template.add_argument("--file", required=True)
-        template.add_argument("--set", action="append", metavar="NAME=VALUE", help="a value for one of the template's vars")
+        template.add_argument("--set", action="append", metavar="NAME=VALUE", help="a value for one of the template's vars; [a, b] is a list, \"00123\" stays a string")
         if action == "show":
             template.add_argument("--expanded", action="store_true")
     warrants = commands.add_parser("warrant").add_subparsers(dest="action", required=True)
@@ -117,7 +117,7 @@ def parser():
     source.add_argument("--template")
     source.add_argument("--request")
     issue.add_argument("--holder")
-    issue.add_argument("--set", action="append", metavar="NAME=VALUE", help="a value for one of the template's vars")
+    issue.add_argument("--set", action="append", metavar="NAME=VALUE", help="a value for one of the template's vars; [a, b] is a list, \"00123\" stays a string")
     issue.add_argument("--from", dest="parent")
     issue.add_argument("--key")
     for action in ("show", "verify", "reissue", "review"):
@@ -127,7 +127,7 @@ def parser():
         source.add_argument("--file")
         source.add_argument("--id", type=name)
         if action in ("show", "review"):
-            sub.add_argument("--set", action="append", metavar="NAME=VALUE", help="a value for one of the template's vars")
+            sub.add_argument("--set", action="append", metavar="NAME=VALUE", help="a value for one of the template's vars; [a, b] is a list, \"00123\" stays a string")
         if action == "reissue":
             sub.add_argument("--ttl", required=True)
             sub.add_argument("--holder")
@@ -371,6 +371,8 @@ def warrant_command(opts, workspace):
         return {"review": review_template(WarrantTemplate.load(path, parse_set(getattr(opts, "set", None))))}
     if opts.action == "show" and str(path).endswith((".yaml", ".yml")):
         return {"request": WarrantTemplate.load(path, parse_set(getattr(opts, "set", None))).document, "signed": False}
+    if getattr(opts, "set", None):
+        raise DocumentError("--set applies to a YAML template or request, not a signed warrant")
     chain = decode_chain(sys.stdin.read(4 * 1024 * 1024 + 1)) if str(path) == "-" else load_chain(path)
     if opts.action == "show":
         return {"warrant": describe(chain)}

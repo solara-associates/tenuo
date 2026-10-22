@@ -109,6 +109,19 @@ def test_server_with_its_own_guard_is_refused() -> None:
     assert '"result"' not in result.stdout
 
 
+def test_server_parsing_flags_at_import_sees_only_its_own() -> None:
+    key = SigningKey.generate()
+    result = _wrap(
+        "--trusted-root",
+        key.public_key.to_bytes().hex(),
+        "fastmcp_wrap_argv_server:main",
+        env=_env(),
+        stdin=INITIALIZE,
+    )
+    assert "unrecognized arguments" not in result.stderr
+    assert '"result"' in result.stdout
+
+
 def test_server_not_built_on_fastmcp_is_refused() -> None:
     key = SigningKey.generate()
     result = _wrap(

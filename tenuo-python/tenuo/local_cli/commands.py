@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import sys
 
 import yaml
@@ -20,6 +21,37 @@ from .files import (
     update_revocations,
 )
 from .workspace import Workspace
+
+# Integrations add a command group under their own name, the way kubectl and gh
+# take plugins: a package registers a `tenuo.cli` entry point whose function
+# receives the rest of the command line. The global options reach it as
+# TENUO_HOME and TENUO_JSON=1. Known ones get an install hint.
+KNOWN_INTEGRATIONS = {"hermes": "hermes-tenuo"}
+
+
+def integrations():
+    from importlib.metadata import entry_points
+
+    found = entry_points()
+    # Python 3.9 returns a dict of groups; 3.10+ selects by keyword.
+    group = found.select(group="tenuo.cli") if hasattr(found, "select") else found.get("tenuo.cli", ())
+    return {entry.name: entry for entry in group}
+
+
+def split_integration(argv, builtins):
+    """``[--home DIR] [--json] NAME rest…`` → (globals, NAME, rest) when NAME is an
+    integration, so its own options (``hermes --help``) reach it untouched."""
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--json" or argv[i].startswith("--home="):
+            i += 1
+        elif argv[i] == "--home":
+            i += 2
+        else:
+            break
+    if i < len(argv) and argv[i] not in builtins and argv[i] in set(integrations()) | set(KNOWN_INTEGRATIONS):
+        return argv[:i], argv[i], argv[i + 1:]
+    return None
 
 
 def parser():
@@ -74,6 +106,7 @@ def parser():
     for action in ("validate", "show"):
         template = templates.add_parser(action)
         template.add_argument("--file", required=True)
+        template.add_argument("--set", action="append", metavar="NAME=VALUE", help="a value for one of the template's vars")
         if action == "show":
             template.add_argument("--expanded", action="store_true")
     warrants = commands.add_parser("warrant").add_subparsers(dest="action", required=True)
@@ -82,13 +115,17 @@ def parser():
     source.add_argument("--template")
     source.add_argument("--request")
     issue.add_argument("--holder")
+    issue.add_argument("--set", action="append", metavar="NAME=VALUE", help="a value for one of the template's vars")
     issue.add_argument("--from", dest="parent")
     issue.add_argument("--key")
-    for action in ("show", "verify", "reissue"):
-        sub = warrants.add_parser(action)
+    for action in ("show", "verify", "reissue", "review"):
+        help = "Explain what a warrant or YAML template allows, and what gets through" if action == "review" else None
+        sub = warrants.add_parser(action, help=help)
         source = sub.add_mutually_exclusive_group(required=True)
         source.add_argument("--file")
         source.add_argument("--id", type=name)
+        if action in ("show", "review"):
+            sub.add_argument("--set", action="append", metavar="NAME=VALUE", help="a value for one of the template's vars")
         if action == "reissue":
             sub.add_argument("--ttl", required=True)
             sub.add_argument("--holder")
@@ -114,7 +151,26 @@ def parser():
         sub.add_argument("--yes", action="store_true")
         if action == "deny":
             sub.add_argument("--reason", required=True)
+    root.builtins = set(commands.choices)
+    for integration in sorted(set(integrations()) | set(KNOWN_INTEGRATIONS)):
+        if integration in root.builtins:
+            continue
+        sub = commands.add_parser(integration, add_help=False, help=f"Commands from {KNOWN_INTEGRATIONS.get(integration, integration)}")
+        sub.add_argument("args", nargs=argparse.REMAINDER)
     return root
+
+
+def run_integration(opts):
+    entry = integrations().get(opts.command)
+    if entry is None:
+        package = KNOWN_INTEGRATIONS[opts.command]
+        print(f"tenuo-cli {opts.command} comes with {package}: pip install {package}", file=sys.stderr)
+        return 2
+    if opts.home:
+        os.environ["TENUO_HOME"] = opts.home
+    if opts.json:
+        os.environ["TENUO_JSON"] = "1"
+    return entry.load()(opts.args) or 0
 
 
 def execute(opts, workspace):
@@ -159,7 +215,7 @@ def execute(opts, workspace):
     if opts.command == "warrant":
         return warrant_command(opts, workspace)
     if opts.command == "template":
-        from tenuo.warrant_template import WarrantTemplate
+        from tenuo.warrant_template import WarrantTemplate, parse_set
         from .files import write_yaml
 
         if opts.action == "new":
@@ -171,10 +227,11 @@ def execute(opts, workspace):
             }
             write_yaml(opts.out, data)
             return {"file": opts.out, "message": "Edit the tool and argument names to match your application."}
-        template = WarrantTemplate.load(opts.file)
+        template = WarrantTemplate.load(opts.file, parse_set(opts.set))
         if opts.action == "validate":
-            warnings = template_warnings(template.document)
-            return {"valid": True, "file": opts.file, **({"warnings": warnings} if warnings else {})}
+            from .review import brief, review_template
+
+            return {"valid": True, "file": opts.file, "review": brief(review_template(template), opts.file)}
         return {"template": template.expanded() if opts.expanded else template.document, "signed": False}
     if opts.command == "init":
         workspace.initialize(dev=opts.dev)
@@ -260,33 +317,18 @@ def refuse_workspace_secret(workspace, path, key):
         check_public_material(load_signing_key(private), [key])
 
 
-def template_warnings(document):
-    """Readable-syntax values that probably don't mean what they look like."""
-    warnings = []
-    for tool, arguments in (document.get("capabilities") or {}).items():
-        for argument, value in (arguments or {}).items() if isinstance(arguments, dict) else ():
-            items = value if isinstance(value, list) else [value]
-            for item in items:
-                if isinstance(item, str) and any(mark in item for mark in "*?"):
-                    kind = "one_of value" if isinstance(value, list) else "value"
-                    warnings.append(
-                        f"{tool}.{argument}: {item!r} is an exact {kind}, not a wildcard; "
-                        f"write {{pattern: {item!r}}} to match by pattern, or {{exact: {item!r}}} to keep it exact"
-                    )
-    return warnings
-
-
 def warrant_command(opts, workspace):
     from pathlib import Path
-    from tenuo.warrant_template import WarrantTemplate, duration
-    from .warrants import decode_chain, describe, issue, load_chain, reissue, save
+    from tenuo.warrant_template import WarrantTemplate, duration, parse_set
+    from .review import brief, review_chain, review_template
+    from .warrants import check, decode_chain, describe, issue, load_chain, reissue, save
 
-    if opts.action != "show":
+    if opts.action not in ("show", "review"):
         workspace.config
 
     if opts.action == "issue":
         path = Path(opts.template or opts.request).expanduser()
-        template = WarrantTemplate.load(path)
+        template = WarrantTemplate.load(path, parse_set(opts.set))
         data = template.document
         if opts.request:
             if data.get("kind") != "warrant-request" or opts.holder:
@@ -307,27 +349,31 @@ def warrant_command(opts, workspace):
             issuer=opts.key,
             parent=load_chain(opts.parent) if opts.parent else None,
         )
-        return {"warrant": describe(chain), "files": save(workspace, chain, out=opts.out, store=not opts.no_store, replace=opts.replace)}
+        files = save(workspace, chain, out=opts.out, store=not opts.no_store, replace=opts.replace)
+        return {
+            "warrant": {**describe(chain), **check(workspace, chain)},
+            "files": files,
+            "review": brief(review_chain(chain), files[-1]),
+        }
     if opts.action == "list":
         entries, errors = [], []
         for path in sorted((workspace.path / "warrants").glob("*.warrant")):
             try:
-                row = describe(load_chain(path))
-                try:
-                    workspace.authorizer().verify_chain(load_chain(path))
-                    row["verified"] = True
-                except Exception:
-                    row["verification_error"] = "Not valid against current local trust, expiry or revocations"
-                entries.append(row)
+                chain = load_chain(path)
+                entries.append({**describe(chain), **check(workspace, chain)})
             except Exception:
                 errors.append({"file": str(path), "error": "Could not decode warrant"})
         return {"warrants": entries, "errors": errors}
     path = getattr(opts, "file", None) or workspace.path / "warrants" / (opts.id + ".warrant")
+    if opts.action == "review" and str(path).endswith((".yaml", ".yml")):
+        return {"review": review_template(WarrantTemplate.load(path, parse_set(getattr(opts, "set", None))))}
     if opts.action == "show" and str(path).endswith((".yaml", ".yml")):
-        return {"request": WarrantTemplate.load(path).document, "signed": False}
+        return {"request": WarrantTemplate.load(path, parse_set(getattr(opts, "set", None))).document, "signed": False}
     chain = decode_chain(sys.stdin.read(4 * 1024 * 1024 + 1)) if str(path) == "-" else load_chain(path)
     if opts.action == "show":
         return {"warrant": describe(chain)}
+    if opts.action == "review":
+        return {"review": review_chain(chain)}
     if opts.action == "verify":
         try:
             workspace.authorizer().verify_chain(chain)
@@ -346,11 +392,24 @@ def warrant_command(opts, workspace):
         issuer=opts.key,
         holder=workspace.public_key(opts.holder) if opts.holder else None,
     )
-    return {"warrant": describe(chain), "files": save(workspace, chain, out=opts.out, store=not opts.no_store, replace=opts.replace)}
+    return {
+        "warrant": {**describe(chain), **check(workspace, chain)},
+        "files": save(workspace, chain, out=opts.out, store=not opts.no_store, replace=opts.replace),
+    }
 
 
 def main(argv=None):
-    opts = parser().parse_args(argv)
+    argv = sys.argv[1:] if argv is None else list(argv)
+    root = parser()
+    split = split_integration(argv, root.builtins)
+    if split is not None:
+        options, name, rest = split
+        opts = root.parse_args([*options, name])
+        opts.args = rest
+        return run_integration(opts)
+    opts = root.parse_args(argv)
+    if hasattr(opts, "args"):
+        return run_integration(opts)
     try:
         result = execute(opts, Workspace(opts.home))
         status = result.pop("exit_code", 1 if any(c["status"] == "error" for c in result.get("checks", [])) else 0)

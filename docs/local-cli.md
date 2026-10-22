@@ -36,7 +36,7 @@ The default workspace is `~/.tenuo/`, outside your project. Change it with
 | `trust/*.pub` | Trusted roots: issuer public keys the verifier accepts |
 | `revocations.srl` | Core signed revocation list in native CBOR |
 | `warrants/` | Issued warrant chains |
-| `sessions/` | Session attachments, managed by the integration (e.g. `hermes-tenuo session`) |
+| `sessions/` | Session attachments, managed by the integration (e.g. `tenuo-cli hermes session`) |
 | `requests/`, `approvals/` | Portable requests and responses |
 | `observations.jsonl` | Calls recorded in observe mode, with argument values |
 
@@ -133,6 +133,12 @@ A plain string is an exact value, so `order_id: A-*` matches only the literal
 `A-*`. `template validate` warns about a plain string or `one_of` entry that
 contains `*` or `?`; write `{pattern: A-*}` to match by pattern.
 
+Every argument a template names must be present, and arguments it doesn't name
+are refused. Wrap an argument a tool may leave out in `optional`: it can be
+omitted, and if it's sent it must match, e.g. `limit: {optional: 1..10}` or
+`action: {optional: send}`. A list may hold integers for numeric IDs such as
+`pullNumber: [57, 58]`.
+
 ```yaml
 version: 2
 name: refunds
@@ -150,6 +156,34 @@ approver for amounts outside the exempt range of 1–5000. An approval cannot
 permit a call outside the warrant's capabilities. `required: {refund: always}`
 gates every refund. Relative approver paths resolve from the YAML file. Local key
 names are convenience labels, not verified identities.
+
+A template can take values when it's issued, so one file serves every project or
+repository. Declare them under `vars` and use `${name}` in values:
+
+```yaml
+version: 2
+name: project-task
+ttl: 4h
+vars:
+  project: {description: "the project's absolute path"}
+  commands: {default: [pytest -q, git status, git diff]}
+capabilities:
+  read_file: {path: {subpath: "${project}"}}
+  terminal: {command: "${commands}", workdir: ["${project}"]}
+```
+
+```bash
+tenuo-cli warrant issue --template project.yaml --holder agent --set project=$PWD
+tenuo-cli warrant issue --template project.yaml --holder agent --set project=$PWD --set "commands=[pytest -q]"
+```
+
+`--set` reads `[a, b]` as a list and a whole number as an integer (issue and PR
+numbers); anything else is text. `${name}` as a whole value takes the variable's
+value; inside a
+longer string it's replaced as text. Quote it inside `{…}`. A variable without a
+`default` must be set, and the error names the `--set` to add. `template
+validate`, `template show` and `warrant review` take `--set` too. The issued
+warrant holds the resolved values; variables never reach a verifier.
 
 For a standalone request, add `kind: warrant-request` and `holder: agent` (or a
 public key path). An optional `reason` helps review. No registered policy is
@@ -216,6 +250,41 @@ cannot exceed the parent. The output always carries its complete chain.
 Issuing a warrant does not attach it to a running session or workflow. Deliver
 the selected file through the integration's explicit warrant configuration.
 Nothing automatically selects the newest warrant or combines stored grants.
+
+## Review what a warrant allows
+
+`template validate` and `warrant issue` end with a short review. For the whole
+review of a template or an issued warrant:
+
+```bash
+tenuo-cli warrant review --file agent.yaml
+tenuo-cli warrant review --file ~/.tenuo/agent.warrant
+```
+
+```yaml
+review:
+  summary: '5 tools, valid for 8h: 4 high, 2 medium, 2 low'
+  allows:
+    read_file:
+      path: glob "src/*" (compares text; does not resolve ..)
+  findings:
+  - severity: high
+    tool: read_file
+    argument: path
+    problem: 'Paths outside the intended directory get through: ...'
+    allowed_inputs:
+    - src/../.env
+    fix: 'Use {subpath: /absolute/project/dir}, which resolves ..'
+```
+
+Each argument's constraint is explained in plain language. Findings come from
+the constraint type and the argument's name (paths, URLs, commands, amounts,
+recipients). `allowed_inputs` are attack inputs, such as traversal, secrets,
+cloud metadata URLs and shell commands, that the argument's native constraint
+check accepts: the same check a verifier runs. An empty list means no known
+pattern got through, not that the warrant is safe for the task. Review decodes
+without verifying; use `warrant verify` for trust, expiry and revocation. It
+reviews the leaf of a delegated chain, which bounds what the holder can do.
 
 ## Approve a held call using files
 
@@ -463,11 +532,35 @@ update the runtime key selection and deliver the new grants. Revoke known old
 warrant IDs explicitly. Rotating a key does not revoke unknown grants elsewhere;
 they remain bounded by their signed expiry and the verifiers' revocation data.
 
+## Integration commands
+
+An integration package can add a command group under `tenuo-cli`, named after
+the integration, so everything stays behind one command:
+
+```bash
+pip install hermes-tenuo
+tenuo-cli hermes setup
+tenuo-cli hermes session attach --session cron_1a2b3c --file briefing.warrant
+```
+
+`tenuo-cli --home DIR hermes …` passes the workspace on as `TENUO_HOME`, and
+`--json` as `TENUO_JSON=1`; an integration should honor both. Without
+the package, `tenuo-cli hermes` says which one to install. A package registers
+its group as a `tenuo.cli` entry point whose function receives the remaining
+arguments:
+
+```toml
+[project.entry-points."tenuo.cli"]
+hermes = "hermes_tenuo.cli:tenuo_cli"
+```
+
+Built-in commands always take precedence over an integration's name.
+
 ## Session attachments
 
 For a session-based agent, issuance and attachment are different operations.
-Sessions belong to the integration, so the integration's CLI manages them; for
-Hermes that's `hermes-tenuo session attach|list|show|detach` (see hermes-tenuo).
+Sessions belong to the integration, so the integration adds the commands; for
+Hermes that's `tenuo-cli hermes session attach|list|show|detach`.
 Code uses `tenuo.local.attach`, `detach`, `read_session` and `list_sessions`.
 
 Use the session identifier reported by the integration. Attachment verifies the

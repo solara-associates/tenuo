@@ -125,11 +125,89 @@ def compile_constraint(value):
     raise DocumentError(f"unsupported or invalid constraint type: {kind}")
 
 
+_VAR = re.compile(r"\$\{([a-z_][a-z0-9_]*)\}")
+
+
+def resolve_variables(data, values=None):
+    """Substitute a template's declared ``vars`` into its values.
+
+    ``vars`` maps each name to ``{description, default}`` (both optional).
+    ``${name}`` as a whole value takes the variable's value, list or scalar;
+    inside a longer string it is replaced as text. Every variable used must be
+    declared, every ``--set`` must name a declared variable, and a variable
+    with no default must be set. Returns the document without ``vars``.
+    """
+    values = dict(values or {})
+    if not isinstance(data, dict) or "vars" not in data:
+        if values:
+            raise DocumentError(f"--set {sorted(values)[0]}: this template declares no vars")
+        return data
+    declared = data["vars"]
+    fields(declared, declared if isinstance(declared, dict) else [], where="vars")
+    for name, spec in declared.items():
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z_][a-z0-9_]*", name):
+            raise DocumentError(f"vars.{name}: names are lowercase letters, digits and _")
+        fields(spec if spec is not None else {}, ["description", "default"], where=f"vars.{name}")
+    unknown = sorted(set(values) - set(declared))
+    if unknown:
+        raise DocumentError(f"--set {unknown[0]}: not one of this template's vars ({', '.join(declared)})")
+    resolved = {}
+    missing = []
+    for name, spec in declared.items():
+        spec = spec or {}
+        if name in values:
+            resolved[name] = values[name]
+        elif "default" in spec:
+            resolved[name] = spec["default"]
+        else:
+            missing.append(f"--set {name}=..." + (f"  ({spec['description']})" if spec.get("description") else ""))
+    if missing:
+        raise DocumentError("this template needs: " + "; ".join(missing))
+
+    def substitute(value):
+        if isinstance(value, dict):
+            return {substitute(k): substitute(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [substitute(v) for v in value]
+        if not isinstance(value, str):
+            return value
+        for name in _VAR.findall(value):
+            if name not in resolved:
+                raise DocumentError(f"${{{name}}} is used but not declared under vars")
+        whole = _VAR.fullmatch(value)
+        if whole:
+            return copy.deepcopy(resolved[whole.group(1)])
+
+        def text(match):
+            part = resolved[match.group(1)]
+            if isinstance(part, (dict, list)):
+                raise DocumentError(f"${{{match.group(1)}}} is a list; use it as a whole value")
+            return str(part)
+
+        return _VAR.sub(text, value)
+
+    return substitute({k: v for k, v in data.items() if k != "vars"})
+
+
+def parse_set(items):
+    """``--set name=value`` pairs; ``[a, b]`` is a list, anything else a string."""
+    import yaml
+
+    values = {}
+    for item in items or ():
+        name, sep, value = item.partition("=")
+        if not sep or not name:
+            raise DocumentError(f"--set {item}: use --set NAME=VALUE")
+        values[name] = yaml.safe_load(value) if value.startswith("[") else value
+    return values
+
+
 class WarrantTemplate:
     """A validated, immutable snapshot of a template or unsigned request."""
 
-    def __init__(self, data, *, directory=None):
+    def __init__(self, data, *, directory=None, values=None):
         directory = Path.cwd() if directory is None else Path(directory)
+        data = resolve_variables(data, values)
         fields(
             data,
             ["version", "name", "ttl", "capabilities", "approvals", "kind", "holder", "reason"],
@@ -193,9 +271,9 @@ class WarrantTemplate:
         self._data = copy.deepcopy(data)
 
     @classmethod
-    def load(cls, path):
+    def load(cls, path, values=None):
         path = Path(path).expanduser()
-        return cls(load_yaml(path), directory=path.parent)
+        return cls(load_yaml(path), directory=path.parent, values=values)
 
     @property
     def document(self):

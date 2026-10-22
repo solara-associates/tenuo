@@ -227,5 +227,9 @@ def update_revocations(path, issuer, ids=(), *, create=False, trusted_roots=None
                     raise Refused("add the new issuer public key to trust before rotating the revocation signer")
             builder = SrlBuilder().from_existing(previous).version(previous.version + 1)
         signed = builder.revoke_all(list(ids)).build(issuer)
-        publish(path, bytes(signed.to_bytes()), replace=not create)
+        data = bytes(signed.to_bytes())
+        if len(data) > MAX_BYTES:
+            # Replacing the list with one no reader accepts would lock out every verifier.
+            raise DocumentError(f"{path}: the updated revocation list would exceed 4 MiB; it was not changed")
+        publish(path, data, replace=not create)
         return signed

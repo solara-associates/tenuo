@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import sys
 
 import yaml
@@ -20,6 +21,18 @@ from .files import (
     update_revocations,
 )
 from .workspace import Workspace
+
+# Integrations add a command group under their own name, the way kubectl and gh
+# take plugins: a package registers a `tenuo.cli` entry point whose function
+# receives the rest of the command line. The global options reach it as
+# TENUO_HOME and TENUO_JSON=1. Known ones get an install hint.
+KNOWN_INTEGRATIONS = {"hermes": "hermes-tenuo"}
+
+
+def integrations():
+    from importlib.metadata import entry_points
+
+    return {entry.name: entry for entry in entry_points(group="tenuo.cli")}
 
 
 def parser():
@@ -47,6 +60,17 @@ def parser():
         if action == "add":
             sub.add_argument("--id", required=True, action="append")
     commands.add_parser("doctor")
+    mode = commands.add_parser("mode", help="Show or set enforce or observe for local adapters")
+    mode.add_argument("value", nargs="?", choices=("enforce", "observe"))
+    calls = commands.add_parser("calls", help="Calls recorded in observe mode").add_subparsers(
+        dest="action", required=True
+    )
+    for action in ("list", "summary"):
+        sub = calls.add_parser(action)
+        sub.add_argument("--file")
+        sub.add_argument("--tool")
+        if action == "list":
+            sub.add_argument("--limit", type=int, default=100)
     audit = commands.add_parser("audit").add_subparsers(dest="action", required=True)
     for action in ("list", "verify"):
         sub = audit.add_parser(action)
@@ -87,19 +111,11 @@ def parser():
             continue
         sub.add_argument("--out")
         sub.add_argument("--no-store", action="store_true")
+        sub.add_argument("--replace", action="store_true", help="swap an existing --out file")
     issue.add_argument("--out")
     issue.add_argument("--no-store", action="store_true")
+    issue.add_argument("--replace", action="store_true", help="swap an existing --out file")
     warrants.add_parser("list")
-    sessions = commands.add_parser("session").add_subparsers(dest="action", required=True)
-    sessions.add_parser("list")
-    for action in ("show", "attach", "detach"):
-        sub = sessions.add_parser(action)
-        sub.add_argument("--session", required=True)
-        if action == "attach":
-            sub.add_argument("--file", required=True)
-            sub.add_argument("--holder", default="agent")
-        if action == "detach":
-            sub.add_argument("--id", required=True, type=name)
     approvals = commands.add_parser("approval").add_subparsers(dest="action", required=True)
     for action in ("show", "approve", "deny"):
         sub = approvals.add_parser(action)
@@ -112,7 +128,25 @@ def parser():
         sub.add_argument("--yes", action="store_true")
         if action == "deny":
             sub.add_argument("--reason", required=True)
+    for integration in sorted(set(integrations()) | set(KNOWN_INTEGRATIONS)):
+        if integration in commands.choices:
+            continue
+        sub = commands.add_parser(integration, add_help=False, help=f"Commands from {KNOWN_INTEGRATIONS.get(integration, integration)}")
+        sub.add_argument("args", nargs=argparse.REMAINDER)
     return root
+
+
+def run_integration(opts):
+    entry = integrations().get(opts.command)
+    if entry is None:
+        package = KNOWN_INTEGRATIONS[opts.command]
+        print(f"tenuo-cli {opts.command} comes with {package}: pip install {package}", file=sys.stderr)
+        return 2
+    if opts.home:
+        os.environ["TENUO_HOME"] = opts.home
+    if opts.json:
+        os.environ["TENUO_JSON"] = "1"
+    return entry.load()(opts.args) or 0
 
 
 def execute(opts, workspace):
@@ -123,18 +157,6 @@ def execute(opts, workspace):
                              authorizers=opts.authorizer, warrant=getattr(opts, "warrant", None),
                              denied=getattr(opts, "denied", False), since=getattr(opts, "since", None),
                              limit=getattr(opts, "limit", 100))
-    if opts.command == "session":
-        from .sessions import attach, detach, list_sessions, read_session
-        from .warrants import load_chain
-
-        workspace.config
-        if opts.action == "list":
-            return {"sessions": list_sessions(workspace)}
-        if opts.action == "attach":
-            return {"session": attach(workspace, opts.session, load_chain(opts.file), holder=opts.holder)}
-        if opts.action == "detach":
-            return {"session": detach(workspace, opts.session, opts.id)}
-        return {"session": read_session(workspace, opts.session)}
     if opts.command == "approval":
         from .approvals import read_request, sign_response
         from .warrants import decode_chain
@@ -191,7 +213,11 @@ def execute(opts, workspace):
         workspace.initialize(dev=opts.dev)
         return {
             "home": str(workspace.path),
-            "message": "Local files ready. Next: issue a warrant from a YAML template.",
+            "message": (
+                "Local files ready. Next: tenuo-cli mode observe, run your agent, then tenuo-cli calls summary."
+                if opts.dev
+                else "Local files ready. Next: add an issuer with tenuo-cli trust add, then tenuo-cli mode observe."
+            ),
             "development": opts.dev,
         }
     workspace.config
@@ -209,6 +235,7 @@ def execute(opts, workspace):
                 ]
             }
         key = load_public_key(opts.file)
+        refuse_workspace_secret(workspace, opts.file, key)
         destination = workspace.path / "trust" / ((opts.name or fingerprint(key)) + ".pub")
         publish(destination, base64.b64encode(bytes(key.to_bytes())) + b"\n")
         return {"file": str(destination), "fingerprint": fingerprint(key)}
@@ -231,7 +258,39 @@ def execute(opts, workspace):
         }
     if opts.command == "doctor":
         return {"checks": workspace.diagnostics()}
+    if opts.command == "mode":
+        if opts.value is None:
+            return {"mode": workspace.config["mode"]}
+        workspace.set_mode(opts.value)
+        message = (
+            "Local adapters now record calls and block nothing. Review them with tenuo-cli calls summary."
+            if opts.value == "observe"
+            else "Local adapters enforce warrants from their next call. Temporal workers pick this up when restarted."
+        )
+        return {"mode": opts.value, "message": message}
+    if opts.command == "calls":
+        from .observations import list_calls, summarize_calls
+
+        if opts.action == "list":
+            return list_calls(workspace, path=opts.file, tool=opts.tool, limit=opts.limit)
+        return summarize_calls(workspace, path=opts.file, tool=opts.tool)
     raise DocumentError("unknown command")
+
+
+def refuse_workspace_secret(workspace, path, key):
+    """Trust files are shared as public data; never publish a workspace private key through one."""
+    import os
+
+    from .files import check_public_material, load_signing_key
+
+    source = os.stat(os.path.expanduser(path))
+    for private in sorted((workspace.path / "keys").glob("*.key")):
+        if os.path.samefile(path, private) or (source.st_ino, source.st_dev) == (
+            os.stat(private).st_ino,
+            os.stat(private).st_dev,
+        ):
+            raise DocumentError("trust input is a workspace private key; use its .pub file")
+        check_public_material(load_signing_key(private), [key])
 
 
 def warrant_command(opts, workspace):
@@ -266,7 +325,7 @@ def warrant_command(opts, workspace):
             issuer=opts.key,
             parent=load_chain(opts.parent) if opts.parent else None,
         )
-        files = save(workspace, chain, out=opts.out, store=not opts.no_store)
+        files = save(workspace, chain, out=opts.out, store=not opts.no_store, replace=opts.replace)
         return {"warrant": describe(chain), "files": files, "review": brief(review_chain(chain), files[-1])}
     if opts.action == "list":
         entries, errors = [], []
@@ -310,11 +369,13 @@ def warrant_command(opts, workspace):
         issuer=opts.key,
         holder=workspace.public_key(opts.holder) if opts.holder else None,
     )
-    return {"warrant": describe(chain), "files": save(workspace, chain, out=opts.out, store=not opts.no_store)}
+    return {"warrant": describe(chain), "files": save(workspace, chain, out=opts.out, store=not opts.no_store, replace=opts.replace)}
 
 
 def main(argv=None):
     opts = parser().parse_args(argv)
+    if hasattr(opts, "args"):
+        return run_integration(opts)
     try:
         result = execute(opts, Workspace(opts.home))
         status = result.pop("exit_code", 1 if any(c["status"] == "error" for c in result.get("checks", [])) else 0)

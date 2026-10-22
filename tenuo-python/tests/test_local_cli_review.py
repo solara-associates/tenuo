@@ -93,6 +93,51 @@ def test_argument_kinds():
     assert kind("order_id") == "value"
     assert kind("query") == "text"
     assert kind("query", tool="run_sql") == "command"
+    # Recipients match whole names: in_reply_to is a Message-ID, not an address.
+    assert kind("to") == kind("bcc") == "recipient"
+    assert kind("in_reply_to") == "value"
+    # Filters are bounded by the path they search, not locations themselves.
+    assert kind("file_glob") == kind("pattern") == "text"
+    assert kind("old_string") == kind("new_string") == "text"
+
+
+def test_optional_is_described_and_reviewed_by_its_inner_constraint():
+    pytest.importorskip("tenuo_core").Optional  # tenuo#923
+    result = review_template(WarrantTemplate({"version": 2, "ttl": "30m", "capabilities": {
+        "terminal": {"command": ["pytest -q"], "timeout": {"optional": "1..600"}},
+        "read_file": {"path": {"subpath": "/srv/app"}, "offset": {"optional": "any"}},
+        "fetch": {"url": {"optional": "any"}},
+    }}))
+    assert result["allows"]["terminal"]["timeout"] == "optional: 1 to 600"
+    assert result["allows"]["read_file"]["offset"] == "optional: any value"
+    found = by_place(result)
+    assert found["fetch", "url"]["severity"] == "high"  # absent is fine; present, it's any URL
+    assert found["read_file", "offset"]["severity"] == "low"
+
+
+def test_free_form_values_are_low_not_medium():
+    result = review_template(WarrantTemplate({"version": 2, "ttl": "30m", "capabilities": {
+        "patch": {"path": {"subpath": "/srv/app"}, "old_string": "any", "new_string": "any"},
+        "search_files": {"path": {"subpath": "/srv/app"}, "pattern": "any", "file_glob": "any", "limit": "any"},
+        "send_gmail_message": {"to": "bob@vendor.com", "in_reply_to": "any"},
+    }}))
+    severities = {(f.get("tool"), f.get("argument")): f["severity"] for f in result["findings"]}
+    assert not any(s == "high" for s in severities.values()), severities
+    assert severities.get(("search_files", "limit")) == "low"
+    assert ("patch", "old_string") not in severities and ("search_files", "file_glob") not in severities
+
+
+def test_validate_reports_literal_wildcards_as_findings(tmp_path, capsys):
+    path = tmp_path / "t.yaml"
+    path.write_text(
+        "version: 2\nttl: 5m\ncapabilities:\n"
+        "  get_order:\n    order_id: A-*\n"
+        "  list_files:\n    path: {pattern: /data/*}\n    kind: [csv, '*.tsv']\n"
+    )
+    assert main(["--home", str(tmp_path / ".tenuo"), "--json", "template", "validate", "--file", str(path)]) == 0
+    lines = json.loads(capsys.readouterr().out)["review"]["findings"]
+    assert "medium: get_order.order_id: 'A-*' is an exact value, not a wildcard." in lines
+    assert "medium: list_files.kind: '*.tsv' is an exact one_of value, not a wildcard." in lines
 
 
 def test_home_directory_subpath_and_sql_query():
@@ -124,7 +169,7 @@ def test_cli_validate_issue_and_review(workspace, capsys):
     prefix = ["--home", str(workspace.path), "--json"]
     assert main([*prefix, "template", "validate", "--file", str(path)]) == 0
     brief = json.loads(capsys.readouterr().out)["review"]
-    assert brief["summary"].startswith("5 tools, valid for 8h: 4 high, 2 medium")
+    assert brief["summary"].startswith("5 tools, valid for 8h: 4 high, 1 medium")
     assert any('Gets through: "src/../.env"' in line for line in brief["findings"])
     assert brief["details"] == f"tenuo-cli warrant review --file {path}"
 

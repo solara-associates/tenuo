@@ -140,3 +140,36 @@ def test_default_workspace_is_outside_the_project(tmp_path, monkeypatch):
     assert Workspace().path == tmp_path / "home" / ".tenuo"
     monkeypatch.setenv("TENUO_HOME", str(tmp_path / "custom"))
     assert Workspace().path == tmp_path / "custom"
+
+
+def test_trust_add_refuses_a_workspace_private_key_under_any_name(tmp_path, capsys):
+    import base64
+    import os
+
+    from tenuo.local_cli.commands import main
+
+    home = tmp_path / ".tenuo"
+    Workspace(home).initialize(dev=True)
+    issuer_key = home / "keys/issuer.key"
+    seed = base64.b64decode(issuer_key.read_text().strip())
+    disguised = tmp_path / "issuer.pub"
+    disguised.write_text(base64.b64encode(seed).decode() + "\n")
+    hardlink = tmp_path / "linked.pub"
+    os.link(issuer_key, hardlink)
+    for path in (issuer_key, disguised, hardlink):
+        assert main(["--home", str(home), "--json", "trust", "add", "--file", str(path)]) != 0
+    assert sorted(p.name for p in (home / "trust").glob("*.pub")) == ["issuer.pub"]
+
+
+def test_an_oversized_revocation_update_leaves_the_list_unchanged(tmp_path, monkeypatch):
+    from tenuo.local_cli import files
+
+    home = tmp_path / ".tenuo"
+    workspace = Workspace(home)
+    workspace.initialize(dev=True)
+    before = (home / "revocations.srl").read_bytes()
+    monkeypatch.setattr(files, "MAX_BYTES", len(before) + 8)
+    with pytest.raises(files.DocumentError, match="would exceed"):
+        files.update_revocations(home / "revocations.srl", workspace.signing_key("issuer"),
+                                 [f"tnu_wrt_{i:032x}" for i in range(20)])
+    assert (home / "revocations.srl").read_bytes() == before

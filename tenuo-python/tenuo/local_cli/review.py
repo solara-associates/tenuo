@@ -17,8 +17,13 @@ _PATH = {"path", "file", "filename", "filepath", "dir", "directory", "folder"}
 _URL = {"url", "uri", "endpoint", "href", "link", "webhook"}
 _COMMAND = {"cmd", "command", "script", "shell", "argv", "sql"}
 _MONEY = {"amount", "price", "cents", "total", "cost", "fee", "usd", "eur"}
-_RECIPIENT = {"to", "recipient", "email", "account", "iban", "payee", "destination"}
-_TEXT = {"content", "text", "body", "message", "prompt", "query", "description", "comment", "note", "title", "subject"}
+# Matched against the whole argument name: as a word, "to" also hits in_reply_to.
+_RECIPIENT = {"to", "cc", "bcc", "recipient", "recipients", "email", "to_email", "email_address", "account", "iban",
+              "payee", "destination"}
+_TEXT = {"content", "text", "body", "message", "prompt", "query", "description", "comment", "note", "title", "subject",
+         "string"}
+# Filters over names or contents (file_glob, pattern), not locations: a path constraint elsewhere bounds them.
+_FILTER = {"glob", "pattern", "regex", "filter"}
 _GATE_WORTHY = {"refund", "pay", "payment", "transfer", "charge", "delete", "drop", "deploy", "wire"}
 
 _PROBES = {
@@ -47,12 +52,15 @@ def kind(argument, tool=""):
     words = _words(argument)
     if "query" in words and _words(tool) & {"sql", "db", "database"}:
         return "command"
+    if argument.lower() in _RECIPIENT:
+        return "recipient"
+    if words & _FILTER:
+        return "text"
     for label, names in (
         ("command", _COMMAND),
         ("path", _PATH),
         ("url", _URL),
         ("money", _MONEY),
-        ("recipient", _RECIPIENT),
         ("text", _TEXT),
     ):
         if words & names:
@@ -76,6 +84,8 @@ def _anchored(pattern):
 
 def describe_constraint(c):
     name = type(c).__name__
+    if name == "Optional":
+        return f"optional: {describe_constraint(c.inner)}"
     if name in ("Wildcard", "AnyValue"):
         return "any value"
     if name == "Exact":
@@ -154,12 +164,19 @@ _FIXES = {
 
 
 def _argument_findings(tool, argument, c):
+    if type(c).__name__ == "Optional":  # may be absent; when present, its inner constraint decides
+        c = c.inner
     label, name = kind(argument, tool), type(c).__name__
     allowed = [v for v in probes(c, label) if _allowed(c, v)]
     severe = "high" if label in _HIGH_RISK else "medium"
     if name in ("Wildcard", "AnyValue"):
         if label == "text":
             return []
+        if label not in _HIGH_RISK:
+            # Free-form values (an edit's old and new text, a page size) have no
+            # meaningful constraint; say so quietly instead of on every warrant.
+            return [_finding("low", tool, argument, "Any value is allowed.",
+                             "Constrain it if the task only needs a few values")]
         problems = {
             "command": "Any command is allowed. A shell can read every file this user can, including Tenuo keys.",
             "path": "Any path is allowed, including secrets and files outside the project.",
@@ -220,9 +237,9 @@ def _explain(c, tree):
     return describe_constraint(c)
 
 
-def review(capabilities, *, ttl_seconds, gated=(), delegable=False, subject=None, issued=False, trees=None):
+def review(capabilities, *, ttl_seconds, gated=(), delegable=False, subject=None, issued=False, trees=None, extra=()):
     """Plain-language authority, findings and attack inputs that get through."""
-    findings, explained, trees = [], {}, trees or {}
+    findings, explained, trees = list(extra), {}, trees or {}
     for tool, arguments in capabilities.items():
         tool_trees = trees.get(tool, {})
         explained[tool] = {arg: _explain(c, tool_trees.get(arg)) for arg, c in arguments.items()} or "no arguments"
@@ -269,6 +286,21 @@ def _duration(seconds):
     return f"{seconds}s"
 
 
+def literal_wildcards(document):
+    """Readable-syntax values that look like wildcards but match only themselves."""
+    findings = []
+    for tool, arguments in (document.get("capabilities") or {}).items():
+        for argument, value in (arguments or {}).items() if isinstance(arguments, dict) else ():
+            items = value if isinstance(value, list) else [value]
+            for item in items:
+                if isinstance(item, str) and any(mark in item for mark in "*?"):
+                    shape = "one_of value" if isinstance(value, list) else "value"
+                    findings.append(_finding(
+                        "medium", tool, argument, f"{item!r} is an exact {shape}, not a wildcard.",
+                        f"Write {{pattern: {item!r}}} to match by pattern, or {{exact: {item!r}}} to keep it exact"))
+    return findings
+
+
 def review_template(template):
     trees = None
     if any(type(c).__name__ in _OPAQUE for args in template._capabilities.values() for c in args.values()):
@@ -282,6 +314,7 @@ def review_template(template):
         gated=set(template._gates),
         delegable=True,
         subject={"subject": "template"},
+        extra=literal_wildcards(template.document),
     )
 
 

@@ -234,6 +234,25 @@ def test_vars_must_be_declared_and_lists_are_whole_values():
     plain = {k: v for k, v in VARS.items() if k != "vars"}
     with pytest.raises(DocumentError, match="declares no vars"):
         WarrantTemplate(plain, values={"project": "/a"})
+    with pytest.raises(DocumentError, match=re.escape("${project} is used but not declared under vars")):
+        WarrantTemplate(plain)
+
+
+def test_vars_values_are_used_as_written_and_keys_stay_unique():
+    from tenuo.local_cli.files import DocumentError
+    from tenuo.warrant_template import WarrantTemplate
+
+    with pytest.raises(DocumentError, match=re.escape("the value of project contains ${commands}")):
+        WarrantTemplate(VARS, values={"project": "${commands}"})
+    nested_default = {**VARS, "vars": {**VARS["vars"], "branch_prefix": {"default": "${project}"}}}
+    with pytest.raises(DocumentError, match=re.escape("the value of branch_prefix contains ${project}")):
+        WarrantTemplate(nested_default, values={"project": "/a"})
+    tools = {"version": 2, "name": "t", "ttl": "1h", "vars": {"tool": {}},
+             "capabilities": {"${tool}": {}, "read_file": {}}}
+    with pytest.raises(DocumentError, match="'read_file' appears twice"):
+        WarrantTemplate(tools, values={"tool": "read_file"})
+    assert set(WarrantTemplate(tools, values={"tool": "list_files"}).document["capabilities"]) == {
+        "list_files", "read_file"}
 
 
 def test_cli_issue_takes_set(tmp_path, capsys):
@@ -262,3 +281,12 @@ def test_parse_set_reads_lists_and_whole_numbers():
         "n": 412, "prs": [57, 58], "p": "/srv/app", "v": "1.5", "t": "on"}
     with pytest.raises(DocumentError):
         parse_set(["novalue"])
+
+
+
+def test_review_details_repeat_set():
+    from tenuo.local_cli.review import brief
+
+    finding = {"severity": "warning", "problem": "broad", "tool": "read_file"}
+    shown = brief({"summary": "1 warning", "findings": [finding]}, "t.yaml", ["project=/srv/my app"])
+    assert shown["details"] == "tenuo-cli warrant review --file t.yaml --set 'project=/srv/my app'"

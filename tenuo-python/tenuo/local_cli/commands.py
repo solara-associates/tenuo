@@ -231,7 +231,7 @@ def execute(opts, workspace):
         if opts.action == "validate":
             from .review import brief, review_template
 
-            return {"valid": True, "file": opts.file, "review": brief(review_template(template), opts.file)}
+            return {"valid": True, "file": opts.file, "review": brief(review_template(template), opts.file, opts.set or ())}
         return {"template": template.expanded() if opts.expanded else template.document, "signed": False}
     if opts.command == "init":
         workspace.initialize(dev=opts.dev)

@@ -138,9 +138,14 @@ def resolve_variables(data, values=None):
     with no default must be set. Returns the document without ``vars``.
     """
     values = dict(values or {})
-    if not isinstance(data, dict) or "vars" not in data:
+    if not isinstance(data, dict):
+        return data
+    if "vars" not in data:
         if values:
             raise DocumentError(f"--set {sorted(values)[0]}: this template declares no vars")
+        used = _placeholders(data)
+        if used:
+            raise DocumentError(f"${{{used[0]}}} is used but not declared under vars")
         return data
     declared = data["vars"]
     fields(declared, declared if isinstance(declared, dict) else [], where="vars")
@@ -163,10 +168,22 @@ def resolve_variables(data, values=None):
             missing.append(f"--set {name}=..." + (f"  ({spec['description']})" if spec.get("description") else ""))
     if missing:
         raise DocumentError("this template needs: " + "; ".join(missing))
+    for name, value in resolved.items():
+        nested = _placeholders(value)
+        if nested:
+            raise DocumentError(f"the value of {name} contains ${{{nested[0]}}}; values are used as written")
 
     def substitute(value):
         if isinstance(value, dict):
-            return {substitute(k): substitute(v) for k, v in value.items()}
+            out = {}
+            for key, item in value.items():
+                resolved_key = substitute(key)
+                if not isinstance(resolved_key, str):
+                    raise DocumentError(f"{key!r} must fill in as a name, not {resolved_key!r}")
+                if resolved_key in out:
+                    raise DocumentError(f"{resolved_key!r} appears twice once vars are filled in")
+                out[resolved_key] = substitute(item)
+            return out
         if isinstance(value, list):
             return [substitute(v) for v in value]
         if not isinstance(value, str):
@@ -187,6 +204,15 @@ def resolve_variables(data, values=None):
         return _VAR.sub(text, value)
 
     return substitute({k: v for k, v in data.items() if k != "vars"})
+
+
+def _placeholders(value):
+    """Every ${name} in a value, at any depth, keys included."""
+    if isinstance(value, dict):
+        return [n for k, v in value.items() for n in _placeholders(k) + _placeholders(v)]
+    if isinstance(value, list):
+        return [n for v in value for n in _placeholders(v)]
+    return _VAR.findall(value) if isinstance(value, str) else []
 
 
 def parse_set(items):

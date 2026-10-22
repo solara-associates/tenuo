@@ -61,8 +61,8 @@ def guard_fastmcp_servers(verifier: Any) -> None:
 
     Patches the MCP SDK's low-level ``Server.run`` (and FastMCP's subclass, where
     it overrides ``run``). Each session's server is mapped back to its FastMCP
-    instance and the middleware is inserted first unless that instance already
-    has one for this verifier. A
+    instance and the middleware is inserted first. A server with a TenuoMiddleware
+    of its own raises :class:`WrapError` rather than run two verifiers. A
     low-level server with no FastMCP instance behind it raises :class:`WrapError`.
     """
     from fastmcp import FastMCP
@@ -79,8 +79,14 @@ def guard_fastmcp_servers(verifier: Any) -> None:
                 "tool calls; refusing to start it unguarded. Put it behind an MCP proxy with a "
                 "Tenuo check instead."
             )
-        # Another TenuoMiddleware may trust other roots or allow warrantless calls; only ours counts.
-        if not any(isinstance(m, TenuoMiddleware) and m._verifier is verifier for m in server.middleware):
+        guards = [m for m in server.middleware if isinstance(m, TenuoMiddleware)]
+        if any(m._verifier is not verifier for m in guards):
+            # Two verifiers with different roots would each reject the other's warrants.
+            raise WrapError(
+                "tenuo.mcp.wrap: this server already checks calls with its own TenuoMiddleware; "
+                "run it directly instead of under tenuo.mcp.wrap."
+            )
+        if not guards:
             server.middleware.insert(0, TenuoMiddleware(verifier))
 
     def patch(cls: type) -> None:

@@ -69,7 +69,7 @@ async def main():
                         cause = cause.cause
                     if isinstance(cause, ApplicationError) and cause.type == "TaskAuthorityDenied":
                         raise TransportedConstraintDenial(str(cause)) from exc
-                    raise cause from exc
+                    raise
             await demonstrate(dispatch, lambda: service.effect_count)
 
 

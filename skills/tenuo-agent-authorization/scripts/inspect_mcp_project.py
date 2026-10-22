@@ -202,6 +202,8 @@ def summarize(findings: list[Finding], max_per_kind: int) -> dict[str, object]:
             "no wrapper, observe-only mode, or fallback route makes authorization optional."
         )
 
+    # Nested evidence shares each kind's --max-per-kind budget, so "truncated" covers it too.
+    shown = {id(item) for items in by_kind.values() for item in items[:max_per_kind]}
     candidates = []
     for path in sorted({item.path for item in findings}):
         items = [item for item in findings if item.path == path]
@@ -230,8 +232,10 @@ def summarize(findings: list[Finding], max_per_kind: int) -> dict[str, object]:
                         if item.kind in {"native_tool", "builtin_execution", "handoff", "mcp_server", "mcp_client"}
                     }
                 ),
-                "effects": [asdict(item) for item in items if item.kind == "effect"],
-                "existing_interception": [asdict(item) for item in items if item.kind in {"interceptor", "verifier"}],
+                "effects": [asdict(item) for item in items if item.kind == "effect" and id(item) in shown],
+                "existing_interception": [
+                    asdict(item) for item in items if item.kind in {"interceptor", "verifier"} and id(item) in shown
+                ],
                 "possible_bypass": "Unverified: trace original handlers, alternate dispatch and direct effect clients in source.",
             }
         )

@@ -60,6 +60,18 @@ class ToolInventoryTests(unittest.TestCase):
                 self.assertIn("Unverified", candidates[0]["possible_bypass"])
                 self.assertTrue(candidates[0]["existing_interception"])
 
+    def test_candidate_evidence_shares_the_per_kind_budget(self):
+        for name in ("inspect_mcp_project", "inspect_native_tools"):
+            with self.subTest(scanner=name), TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "agent.py").write_text("subprocess.run(cmd)\n" * 50)
+                scanner = load_scanner(name)
+                summary = scanner.summarize(scanner.inspect(root), 1)
+                self.assertEqual(summary["counts"]["effect"], 50)
+                self.assertEqual(summary["truncated"]["effect"], 49)
+                nested = [e for c in summary["candidate_boundaries"] for e in c["effects"]]
+                self.assertEqual(len(nested), 1)
+
     def test_installed_skill_and_named_virtualenv_are_not_application_evidence(self):
         for name in ("inspect_mcp_project", "inspect_native_tools"):
             with self.subTest(scanner=name), TemporaryDirectory() as directory:

@@ -162,6 +162,14 @@ Two rules catch most surprises:
   `Regex(r"^[A-Za-z0-9._%+-]+@acme\.com$")`, not `Pattern("*@acme.com")`; the
   glob also matches `eve@evil.com,bob@acme.com`, which a mail tool reads as two
   recipients. See [Constraints](./constraints).
+- **Paths the server joins to its own root need a regex, not a glob.** Many
+  servers take a relative path (`team/standup.md`). `Subpath` needs an absolute
+  path, and `Pattern("team/*")` compares text, so `team/../hr/salaries.md`
+  matches it and the server opens the HR file. Spell out what a path may
+  contain instead: `Regex(r"^team/([A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\.md$")`
+  only lets dots into the extension, so `..` can't appear. In a YAML template,
+  `{regex: '^team/([A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\.md$'}`. `tenuo-cli warrant
+  review` reports a path glob that lets `..` through.
 
 ## Calling it
 

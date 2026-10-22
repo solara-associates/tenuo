@@ -31,6 +31,15 @@ else:  # pragma: no cover
     from exceptiongroup import BaseExceptionGroup
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _reset_global_config():
+    # Some tests call configure(); later tests elsewhere must not inherit their roots.
+    from tenuo.config import reset_config
+
+    yield
+    reset_config()
 REPO = Path(__file__).resolve().parent.parent.parent
 
 

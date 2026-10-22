@@ -55,7 +55,9 @@ def split_integration(argv, builtins):
 
 
 def parser():
-    root = argparse.ArgumentParser(prog="tenuo-cli", description="Authorize agents locally from readable files.")
+    root = argparse.ArgumentParser(
+        prog="tenuo-cli", description="Authorize agents locally from readable files.", allow_abbrev=False
+    )
     root.add_argument("--home", help="Local workspace (default: TENUO_HOME or ~/.tenuo)")
     root.add_argument("--json", action="store_true", help="Print one JSON object to stdout")
     commands = root.add_subparsers(dest="command", required=True)
@@ -231,7 +233,7 @@ def execute(opts, workspace):
         if opts.action == "validate":
             from .review import brief, review_template
 
-            return {"valid": True, "file": opts.file, "review": brief(review_template(template), opts.file)}
+            return {"valid": True, "file": opts.file, "review": brief(review_template(template), opts.file, opts.set or ())}
         return {"template": template.expanded() if opts.expanded else template.document, "signed": False}
     if opts.command == "init":
         workspace.initialize(dev=opts.dev)

@@ -405,3 +405,26 @@ def test_mcp_verifier_keeps_the_observed_denial(monkeypatch):
     assert result.allowed and result.observed
     assert result.error_type == "constraint_violation"
     assert emitted == [result]
+
+
+def test_nexus_records_the_observed_denial_with_its_own_category(monkeypatch):
+    import types
+
+    from tenuo._enforcement import EnforcementResult
+    from tenuo.exceptions import ToolNotAuthorized
+    from tenuo.temporal import _nexus
+
+    sent: List[Any] = []
+    monkeypatch.setattr(_nexus, "_encode_nexus_warrant_stack_for_denial", lambda warrant, chain: None)
+    config = types.SimpleNamespace(
+        control_plane=types.SimpleNamespace(emit_for_enforcement=lambda result, **kw: sent.append(result)),
+        audit_callback=None, metrics=None, runtime=None, redact_args_in_logs=True,
+    )
+    observed = EnforcementResult(allowed=True, observed=True, tool="op", arguments={"a": 1},
+                                 denial_reason="approval expired", error_type="approval_expired")
+    _nexus._emit_nexus_control_plane_event(
+        config, types.SimpleNamespace(request_id=None), WARRANT, None, "op", {"a": 1},
+        start_ns=time.perf_counter_ns(), exc=ToolNotAuthorized("x"), observed=observed,
+    )
+    assert [r.error_type for r in sent] == ["approval_expired"]
+    assert sent[0].arguments == {"a": "[REDACTED]"}

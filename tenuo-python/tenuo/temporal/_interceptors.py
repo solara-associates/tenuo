@@ -1486,8 +1486,12 @@ class TenuoActivityInboundInterceptor:
                 )
 
             if _active_span is not None:
-                _active_span.set_attribute("tenuo.decision", "allow")
-                _active_span.set_attribute("tenuo.constraint_violated", "")
+                # An observed denial ran, but the decision was deny.
+                _active_span.set_attribute("tenuo.decision", "deny" if observed_denial else "allow")
+                _active_span.set_attribute(
+                    "tenuo.constraint_violated",
+                    (enforcement.constraint_violated or "") if observed_denial else "",
+                )
 
         # -- 15. Fail-Closed Error Mapping & Tracing --
         except (

@@ -94,3 +94,9 @@ def test_session_commands_belong_to_the_integration(session, capsys, monkeypatch
     # refusing the existing workspace.
     assert main(["--home", str(workspace.path), "init", "--dev"]) == 1
     assert len(seen) == 1
+
+
+def test_global_options_are_not_abbreviated(capsys):
+    with pytest.raises(SystemExit):
+        main(["--ho", "/tmp/x", "doctor"])
+    assert "unrecognized arguments: --ho" in capsys.readouterr().err

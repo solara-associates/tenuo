@@ -1785,20 +1785,20 @@ impl PyUrlSafe {
         block_metadata: bool,
         block_reserved: bool,
         block_internal_tlds: bool,
-    ) -> Self {
-        Self {
-            inner: UrlSafe {
-                schemes: allow_schemes.unwrap_or_else(|| vec!["http".into(), "https".into()]),
-                allow_domains,
-                deny_domains,
-                allow_ports,
-                block_private,
-                block_loopback,
-                block_metadata,
-                block_reserved,
-                block_internal_tlds,
-            },
-        }
+    ) -> PyResult<Self> {
+        let inner = UrlSafe {
+            schemes: allow_schemes.unwrap_or_else(|| vec!["http".into(), "https".into()]),
+            allow_domains,
+            deny_domains,
+            allow_ports,
+            block_private,
+            block_loopback,
+            block_metadata,
+            block_reserved,
+            block_internal_tlds,
+        };
+        inner.validate().map_err(to_py_err)?;
+        Ok(Self { inner })
     }
 
     /// Check if a URL is safe to fetch.
@@ -1807,7 +1807,9 @@ impl PyUrlSafe {
     ///     url: URL string to check.
     ///
     /// Returns:
-    ///     True if the URL passes all SSRF checks, False otherwise.
+    ///     True if the URL passes stateless URL and literal-IP checks, False
+    ///     otherwise. Hostname DNS results must also be validated and pinned
+    ///     by the HTTP execution layer to prevent DNS rebinding.
     fn is_safe(&self, url: &str) -> PyResult<bool> {
         self.inner.is_safe(url).map_err(to_py_err)
     }
@@ -1818,7 +1820,8 @@ impl PyUrlSafe {
     ///     url: URL string to check.
     ///
     /// Returns:
-    ///     True if the URL passes all SSRF checks, False otherwise.
+    ///     True if the URL passes stateless URL and literal-IP checks, False
+    ///     otherwise. See ``is_safe`` for the DNS-rebinding limitation.
     fn matches(&self, url: &str) -> PyResult<bool> {
         self.is_safe(url)
     }
@@ -4509,6 +4512,43 @@ impl PyCompiledMcpConfig {
         self.inner.validate()
     }
 
+    /// Extraction rules for a tool, or ``None`` if the tool is not configured.
+    ///
+    /// Each rule is a dict with ``field`` (constraint name), ``source``
+    /// (``"body"``, ``"literal"``, ...), ``path`` (dot notation) and
+    /// ``default`` (``None`` when the rule has none). ``MCPVerifier`` uses it
+    /// to check that every argument is read by some rule.
+    fn tool_rules(&self, py: Python<'_>, tool_name: &str) -> PyResult<Option<Py<PyAny>>> {
+        let Some(tool) = self.inner.tools.get(tool_name) else {
+            return Ok(None);
+        };
+        let json_loads = py.import("json")?.getattr("loads")?;
+        let mut fields: Vec<&String> = tool.extraction_rules.rules.keys().collect();
+        fields.sort();
+        let list = pyo3::types::PyList::empty(py);
+        for field in fields {
+            let rule = &tool.extraction_rules.rules[field].rule;
+            let entry = PyDict::new(py);
+            entry.set_item("field", field)?;
+            let source = serde_json::to_value(&rule.from)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default();
+            entry.set_item("source", source)?;
+            entry.set_item("path", &rule.path)?;
+            match &rule.default {
+                Some(value) => {
+                    let text = serde_json::to_string(value)
+                        .map_err(|e| py_validation_err(format!("Invalid default: {}", e)))?;
+                    entry.set_item("default", json_loads.call1((text,))?)?;
+                }
+                None => entry.set_item("default", py.None())?,
+            }
+            list.append(entry)?;
+        }
+        Ok(Some(list.into_any().unbind()))
+    }
+
     /// Extract constraints from an MCP tool call.
     ///
     /// Args:
@@ -4539,6 +4579,25 @@ impl PyCompiledMcpConfig {
             .extract_constraints(tool_name, &args_value)
             .map_err(|e| py_validation_err(e.to_string()))?;
 
+        // Preserve which values came from defaults.  The Python MCP adapter
+        // needs this to pass exactly the values that were authorized to the
+        // tool; path presence alone is insufficient for wildcard/index paths.
+        let mut defaulted_fields: Vec<String> = result
+            .traces
+            .iter()
+            .filter(|trace| {
+                trace.result.is_none()
+                    && self
+                        .inner
+                        .tools
+                        .get(tool_name)
+                        .and_then(|tool| tool.extraction_rules.rules.get(&trace.field))
+                        .is_some_and(|rule| rule.rule.default.is_some())
+            })
+            .map(|trace| trace.field.clone())
+            .collect();
+        defaulted_fields.sort();
+
         // Convert extracted constraints to Python dict
         let dict = PyDict::new(py);
         for (key, value) in result.constraints {
@@ -4552,6 +4611,7 @@ impl PyCompiledMcpConfig {
             warrant_base64: result.warrant_base64,
             signature_base64: result.signature_base64,
             approvals_base64: result.approvals_base64,
+            defaulted_fields,
         })
     }
 }
@@ -4569,6 +4629,9 @@ pub struct PyExtractionResult {
     signature_base64: Option<String>,
     #[pyo3(get)]
     approvals_base64: Vec<String>,
+    /// Constraint fields whose configured default supplied the extracted value.
+    #[pyo3(get)]
+    defaulted_fields: Vec<String>,
 }
 
 #[pymethods]

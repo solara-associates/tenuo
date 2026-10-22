@@ -4,7 +4,7 @@
 **Status:** Normative  
 **Date:** 2026-01-01  
 
-**Documentation Revision:** 4 (2026-03-06)
+**Documentation Revision:** 5 (2026-10-20)
 
 **Related Documents:**
 - [protocol-spec-v1.md](protocol-spec-v1.md) - Protocol Specification (concepts, invariants, algorithms)
@@ -14,6 +14,10 @@
 
 ## Revision History
 
+- **Rev 5** (2026-10-20): Security erratum for `UrlSafe` host policy. Clarified
+  that `allow_domains` constrains every host, including IP literals; domain
+  patterns are canonicalized with the URL host parser; and malformed patterns
+  invalidate the policy and fail closed. No wire bytes or type IDs changed.
 - **Rev 4** (2026-03-06): Added MCP JSON-RPC error code mappings and `params._meta` warrant transport to §A.2. Clarified `PopExpired` description.
 - **Rev 3** (2026-01-21): Verification and enforcement. Fixed `MAX_CONSTRAINT_DEPTH` (16-->32), added Size Limits table, and added test vector cross-references.
 - **Rev 2** (2026-01-10): Normative specification updates.
@@ -23,7 +27,11 @@
 
 ## Overview
 
-This specification defines the wire format for Tenuo warrants. These decisions are baked into v0.1 and cannot change without a major version bump.
+This specification defines the wire format for Tenuo warrants. Encoding and
+schema decisions are baked into v0.1 and cannot change without a major version
+bump. A revision may issue a security erratum that only narrows authority
+without changing the encoded representation; implementations claiming v1
+conformance MUST implement the latest revision's errata.
 
 **Design principles:**
 
@@ -806,14 +814,24 @@ child:  Pattern("/data/reports/file.txt")  # More specific but different type
 | `block_metadata` | `false` to `true` only |
 | `block_reserved` | `false` to `true` only |
 
-#### UrlSafe `deny_domains` Evaluation Order (Normative)
+#### UrlSafe Host-Policy Evaluation Order (Normative)
 
 Implementations MUST evaluate UrlSafe fields in this order:
 
 1. Scheme check, host extraction, port check, loopback/metadata/internal TLD checks.
 2. If host is an IP address: check against `block_private`, `block_loopback`, `block_metadata`, `block_reserved`.
-3. If host is a hostname: check `allow_domains` (reject if not matched).
-4. **`deny_domains` check (MUST run for both IPs and hostnames):** If `deny_domains` is set and the host matches any denied pattern, **REJECT**. Patterns are matched as strings against the host, so `deny_domains: ["169.254.169.254"]` blocks that IP address and `deny_domains: ["*.evil.com"]` blocks hostnames.
+3. **`allow_domains` check (MUST run for every host):** If `allow_domains` is set and the host, including an IP literal, does not match an allowed pattern, **REJECT**.
+4. **`deny_domains` check (MUST run for every host):** If `deny_domains` is set and the host matches any denied pattern, **REJECT**.
+
+Before evaluation, every allow- and deny-list pattern MUST be canonicalized by
+the same host parser used for URL hosts, including case folding, IDNA handling,
+and canonical IP formatting. A pattern is either one exact host or a single
+leading `*.` followed by a domain suffix. A bare `*`, an empty suffix, a
+wildcard IP address, a URL rather than a host, or a wildcard anywhere else is
+invalid. A malformed pattern invalidates the policy; implementations MUST fail
+closed rather than skip it. `*.example.com` matches both `example.com` and its
+subdomains. Exact IP patterns are allowed, but the `block_*` checks above still
+take precedence.
 
 **Deny wins on overlap:** A host that matches both `allow_domains` and `deny_domains` is blocked. This is a security-critical invariant -- implementations that skip `deny_domains` checking or only run it for hostnames silently widen the constraint's authority.
 

@@ -1686,7 +1686,7 @@ pub(crate) fn parse_approvals(value: &JsValue) -> Result<Vec<SignedApproval>, St
     Ok(out)
 }
 
-fn parse_one_approval(value: &JsValue) -> Result<SignedApproval, String> {
+pub(crate) fn parse_one_approval(value: &JsValue) -> Result<SignedApproval, String> {
     if let Some(text) = value.as_string() {
         if text.len() > tenuo::meta_envelope::APPROVAL_STRING_MAX {
             return Err("approval exceeds size limit".into());

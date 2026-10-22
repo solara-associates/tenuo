@@ -906,6 +906,13 @@ jobs:
         working-directory: tenuo-ts
         run: pnpm typecheck
 
+      # Exercise the checked-in binary before `pnpm test` rebuilds it. This is
+      # the artifact copied into the published @tenuo/core package.
+      - name: Test committed WASM security regressions
+        if: steps.lane.outputs.rust == 'true'
+        working-directory: tenuo-ts
+        run: pnpm --filter @tenuo/core exec vitest run test/parity.test.ts -t "cidr, urlPattern, and urlSafe"
+
       - name: Test (rebuilt WASM)
         if: steps.lane.outputs.rust == 'true'
         working-directory: tenuo-ts
@@ -952,6 +959,17 @@ jobs:
         if: steps.lane.outputs.needed == 'true'
         working-directory: tenuo-ts
         run: node examples/vercel-ai-sdk/scripts/verify-packed.mjs
+
+      - name: LangChain.js example
+        if: steps.lane.outputs.needed == 'true'
+        working-directory: tenuo-ts
+        run: node examples/langchain-js/scripts/verify-packed.mjs
+
+      # Drives the worker's processor with a job double, so this needs no Redis.
+      - name: BullMQ job authorization example
+        if: steps.lane.outputs.needed == 'true'
+        working-directory: tenuo-ts
+        run: node examples/bullmq/scripts/verify-packed.mjs
 
   # Test the committed WASM package on the remaining supported Node lines
   # without rebuilding it. Node 24 is the active LTS.

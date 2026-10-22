@@ -208,6 +208,7 @@ export type WasmAttestation = {
 export type WasmApprovalInfo = {
   approver_public_key: string;
   request_hash: string;
+  nonce: string;
   external_id: string;
   approved_at: number;
   expires_at: number;
@@ -324,7 +325,7 @@ type Generated = {
     ttlSeconds?: number,
     warrantExpiresAt?: number,
   ): string;
-  sdkInspectApproval(envelope: string): WasmApprovalInfo;
+  sdkInspectApproval(envelope: string | Uint8Array): WasmApprovalInfo;
   sdkSignRevocationList(ids: string[], issuerSecret: Uint8Array): string;
   sdkSignRevocationListVersioned(ids: string[], version: number | undefined, issuerSecret: Uint8Array): string;
   sdkSignPublishedRevocationList(ids: string[], version: number, issuerSecret: Uint8Array): string;

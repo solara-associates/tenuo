@@ -495,7 +495,7 @@ server = (A2AServerBuilder()
     .registration_handler(my_handler) # Enable CSR handshake
     .build())
 
-@server.skill("search_papers", constraints={"sources": UrlSafe})
+@server.skill("search_papers", constraints={"sources": UrlSafe()})
 async def search_papers(query: str, sources: list[str]) -> list[dict]:
     return await do_search(query, sources)
 
@@ -515,7 +515,7 @@ See [A2A Integration](https://tenuo.ai/a2a) for full documentation.
 
 ## Temporal Integration
 
-_(Requires Python ≥3.10 and `temporalio>=1.23.0`)_
+_(Requires Python ≥3.10 and `temporalio>=1.33.0`)_
 
 Warrant-based authorization for Temporal workflows and activities. The plugin wires the client interceptor, worker interceptor, and sandboxed workflow runner (with PyO3 passthrough) in one step:
 

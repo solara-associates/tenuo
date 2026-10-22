@@ -232,7 +232,7 @@ def execute(opts, workspace):
         message = (
             "Local adapters now record calls and block nothing. Review them with tenuo-cli calls summary."
             if opts.value == "observe"
-            else "Local adapters now enforce warrants. Restart Temporal workers to apply."
+            else "Local adapters enforce warrants from their next call. Temporal workers pick this up when restarted."
         )
         return {"mode": opts.value, "message": message}
     if opts.command == "calls":

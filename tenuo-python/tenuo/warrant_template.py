@@ -49,7 +49,41 @@ def expanded_constraint(value):
         return {"one_of": value}
     if not isinstance(value, dict) or len(value) != 1:
         raise DocumentError("constraint needs a string, a string list, or one explicit typed mapping")
+    if "optional" in value:
+        inner = value["optional"]
+        if isinstance(inner, dict) and "optional" in inner:
+            raise DocumentError("optional cannot wrap another optional")
+        return {"optional": expanded_constraint(inner)}
     return copy.deepcopy(value)
+
+
+def constraint_document(constraint):
+    """Template syntax for a native constraint, or its repr when templates can't express it."""
+    name = type(constraint).__name__
+    if name == "Optional":
+        return {"optional": constraint_document(constraint.inner)}
+    if name in ("Wildcard", "AnyValue"):
+        return "any"
+    if name == "Exact":
+        value = constraint.value
+        if isinstance(value, str) and expanded_constraint(value) == {"exact": value}:
+            return value
+        return {"exact": value}
+    if name == "OneOf":
+        values = list(constraint.values)
+        plain = all(isinstance(v, (str, int)) and not isinstance(v, bool) for v in values)
+        return values if plain else {"one_of": values}
+    if name == "Range":
+        bounds = [constraint.min, constraint.max]
+        if all(b is None or float(b).is_integer() for b in bounds):
+            return "..".join("" if b is None else str(int(b)) for b in bounds)
+        return {"range": {k: v for k, v in zip(("min", "max"), bounds) if v is not None}}
+    if name == "Subpath":
+        return {"subpath": constraint.root}
+    keys = {"Pattern": "pattern", "Regex": "regex", "UrlPattern": "url_pattern"}
+    if name in keys:
+        return {keys[name]: constraint.pattern}
+    return repr(constraint)
 
 
 def compile_constraint(value):
@@ -58,6 +92,11 @@ def compile_constraint(value):
 
     document = expanded_constraint(value)
     kind, argument = next(iter(document.items()))
+    if kind == "optional":
+        # The argument may be left out; if it is sent, it must satisfy the inner constraint.
+        from tenuo import Optional
+
+        return Optional(compile_constraint(argument))
     if kind == "wildcard" and argument is True:
         return Wildcard()
     if kind == "range":
@@ -70,8 +109,10 @@ def compile_constraint(value):
             raise DocumentError("range min must not exceed max")
         return Range(low, high)
     if kind == "one_of":
-        if not isinstance(argument, list) or not argument or not all(isinstance(v, str) for v in argument):
-            raise DocumentError("one_of needs a nonempty list of strings")
+        # Strings or integers: tools send IDs such as PR numbers as JSON numbers.
+        if (not isinstance(argument, list) or not argument
+                or not all(isinstance(v, str) or (isinstance(v, int) and not isinstance(v, bool)) for v in argument)):
+            raise DocumentError("one_of needs a nonempty list of strings or integers")
         return OneOf(argument)
     constructors = {"exact": Exact, "pattern": Pattern, "subpath": Subpath, "regex": Regex, "url_pattern": UrlPattern}
     if kind in constructors and isinstance(argument, str) and "\x00" not in argument:
@@ -84,11 +125,95 @@ def compile_constraint(value):
     raise DocumentError(f"unsupported or invalid constraint type: {kind}")
 
 
+_VAR = re.compile(r"\$\{([a-z_][a-z0-9_]*)\}")
+
+
+def resolve_variables(data, values=None):
+    """Substitute a template's declared ``vars`` into its values.
+
+    ``vars`` maps each name to ``{description, default}`` (both optional).
+    ``${name}`` as a whole value takes the variable's value, list or scalar;
+    inside a longer string it is replaced as text. Every variable used must be
+    declared, every ``--set`` must name a declared variable, and a variable
+    with no default must be set. Returns the document without ``vars``.
+    """
+    values = dict(values or {})
+    if not isinstance(data, dict) or "vars" not in data:
+        if values:
+            raise DocumentError(f"--set {sorted(values)[0]}: this template declares no vars")
+        return data
+    declared = data["vars"]
+    fields(declared, declared if isinstance(declared, dict) else [], where="vars")
+    for name, spec in declared.items():
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z_][a-z0-9_]*", name):
+            raise DocumentError(f"vars.{name}: names are lowercase letters, digits and _")
+        fields(spec if spec is not None else {}, ["description", "default"], where=f"vars.{name}")
+    unknown = sorted(set(values) - set(declared))
+    if unknown:
+        raise DocumentError(f"--set {unknown[0]}: not one of this template's vars ({', '.join(declared)})")
+    resolved = {}
+    missing = []
+    for name, spec in declared.items():
+        spec = spec or {}
+        if name in values:
+            resolved[name] = values[name]
+        elif "default" in spec:
+            resolved[name] = spec["default"]
+        else:
+            missing.append(f"--set {name}=..." + (f"  ({spec['description']})" if spec.get("description") else ""))
+    if missing:
+        raise DocumentError("this template needs: " + "; ".join(missing))
+
+    def substitute(value):
+        if isinstance(value, dict):
+            return {substitute(k): substitute(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [substitute(v) for v in value]
+        if not isinstance(value, str):
+            return value
+        for name in _VAR.findall(value):
+            if name not in resolved:
+                raise DocumentError(f"${{{name}}} is used but not declared under vars")
+        whole = _VAR.fullmatch(value)
+        if whole:
+            return copy.deepcopy(resolved[whole.group(1)])
+
+        def text(match):
+            part = resolved[match.group(1)]
+            if isinstance(part, (dict, list)):
+                raise DocumentError(f"${{{match.group(1)}}} is a list; use it as a whole value")
+            return str(part)
+
+        return _VAR.sub(text, value)
+
+    return substitute({k: v for k, v in data.items() if k != "vars"})
+
+
+def parse_set(items):
+    """``--set name=value`` pairs: ``[a, b]`` is a list, a whole number an integer
+    (issue and PR numbers), anything else a string."""
+    import yaml
+
+    values = {}
+    for item in items or ():
+        name, sep, value = item.partition("=")
+        if not sep or not name:
+            raise DocumentError(f"--set {item}: use --set NAME=VALUE")
+        if value.startswith("["):
+            values[name] = yaml.safe_load(value)
+        elif re.fullmatch(r"-?\d+", value):
+            values[name] = int(value)
+        else:
+            values[name] = value
+    return values
+
+
 class WarrantTemplate:
     """A validated, immutable snapshot of a template or unsigned request."""
 
-    def __init__(self, data, *, directory=None):
+    def __init__(self, data, *, directory=None, values=None):
         directory = Path.cwd() if directory is None else Path(directory)
+        data = resolve_variables(data, values)
         fields(
             data,
             ["version", "name", "ttl", "capabilities", "approvals", "kind", "holder", "reason"],
@@ -152,9 +277,9 @@ class WarrantTemplate:
         self._data = copy.deepcopy(data)
 
     @classmethod
-    def load(cls, path):
+    def load(cls, path, values=None):
         path = Path(path).expanduser()
-        return cls(load_yaml(path), directory=path.parent)
+        return cls(load_yaml(path), directory=path.parent, values=values)
 
     @property
     def document(self):

@@ -509,3 +509,39 @@ async def test_mcp_client_observes_an_expired_warrant_without_blocking(tmp_path)
     assert marker.read_text().splitlines() == ["A-1001"]
     (line,) = recorded(workspace)
     assert line["decision"] == "deny" and line["reason"] != "constraint_violation"
+
+
+def test_summary_ends_with_the_hand_off_for_the_integration_that_saw_the_calls(observing, capsys):
+    workspace, _ = observing
+    from tenuo.local_cli.runtime import LocalAuthority
+
+    authority = LocalAuthority(path=workspace.path, announce=False)
+    authority.record("ha_get_state", {"entity_id": "light.porch"}, run="20261022_0900_aa", step="telegram:5550001",
+                     via="hermes")
+    authority.record("read_file", {"path": "/srv/a"}, run="20261022_1000_bb", step="hermes", via="hermes")
+    authority.record("read_note", {"path": "team/a.md"}, run="p1", step="notes", via="mcp-server")
+    assert main(["--home", str(workspace.path), "--json", "calls", "summary"]) == 0
+    summary = json.loads(capsys.readouterr().out)
+    steps = {s["step"]: s for s in summary["steps"]}
+    assert steps["telegram:5550001"] == {"step": "telegram:5550001", "runs": 1, "latest_run": "20261022_0900_aa",
+                                         "via": "hermes"}
+    nxt = summary["next"]
+    # A person's key is attached as is; a plain chat by its latest session ID; file names are safe.
+    assert ("tenuo-cli hermes session attach --session telegram:5550001 --file telegram-5550001.warrant" in nxt)
+    assert "tenuo-cli hermes session attach --session 20261022_1000_bb --file hermes.warrant" in nxt
+    assert any(line.startswith("# give the warrant to the client that calls this server: SecureMCPClient.local")
+               for line in nxt)
+    assert "tenuo-cli template new --out telegram-5550001.yaml   # fill in from the summary above" in nxt
+    assert nxt[-1] == "tenuo-cli mode enforce"
+
+
+def test_summary_shows_a_prefix_only_when_it_ends_at_a_separator(observing, capsys):
+    workspace, _ = observing
+    from tenuo.local_cli.runtime import LocalAuthority
+
+    authority = LocalAuthority(path=workspace.path, announce=False)
+    for domain, order in (("light", "ORD-100"), ("lock", "ORD-205")):
+        authority.record("t", {"domain": domain, "order": order}, run="r", step="s")
+    assert main(["--home", str(workspace.path), "--json", "calls", "summary"]) == 0
+    args = json.loads(capsys.readouterr().out)["tools"][0]["arguments"]
+    assert "common_prefix" not in args["domain"] and args["order"]["common_prefix"] == "ORD-"

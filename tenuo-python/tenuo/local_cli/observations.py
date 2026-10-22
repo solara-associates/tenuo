@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 from pathlib import Path
 
@@ -45,6 +46,9 @@ def list_calls(workspace, *, path=None, tool=None, limit=100):
     return {"calls": calls[-limit:], "matching_calls": len(calls)}
 
 
+# Integrations whose sessions are attached with tenuo-cli <name> session attach.
+KNOWN_INTEGRATIONS = {"hermes"}
+
 MAX_LISTED_VALUES = 5
 FREE_TEXT_LEN = 80
 
@@ -58,6 +62,7 @@ def summarize_calls(workspace, *, path=None, tool=None):
     tools = {}
     runs = set()
     steps = {}
+    vias = {}
     calls_path = Path(path) if path else workspace.path / OBSERVATIONS
     for call in read_calls(workspace, path):
         if tool is not None and call["tool"] != tool:
@@ -65,6 +70,7 @@ def summarize_calls(workspace, *, path=None, tool=None):
         runs.add(call.get("run"))
         step = call.get("step") or "default"
         steps.setdefault(step, {})[call.get("run")] = call.get("observed_at") or ""
+        vias.setdefault(step, set()).add(call.get("via"))
         entry = tools.setdefault(
             call["tool"],
             {
@@ -113,15 +119,43 @@ def summarize_calls(workspace, *, path=None, tool=None):
         "tools": rows,
         "calls": sum(row["calls"] for row in rows),
         "runs": len(runs),
-        "next": _next_steps(calls_path, steps),
+        "steps": [
+            {"step": step, "runs": len(times), "latest_run": _latest(times),
+             **({"via": sorted(v for v in vias[step] if v)[0]} if any(vias[step]) else {})}
+            for step, times in sorted(steps.items())
+        ],
+        "next": _next_steps(calls_path, steps, vias),
     }
 
 
 WARRANTGEN = "uvx --from git+https://github.com/RajanChavada/warrantgen warrantgen"
 
 
-def _next_steps(calls_path, steps):
-    """The exact commands to write, check and issue a template per step, then enforce.
+def _latest(run_times):
+    return max(run_times.items(), key=lambda item: (item[1], str(item[0])))[0]
+
+
+def _filename(step):
+    """A safe file stem for a step name such as telegram:5550001."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", step).strip("-.") or "warrant"
+
+
+def _hand_off(via, step, latest, warrant):
+    """How the warrant reaches the agent, for the integration that saw the calls."""
+    if via in KNOWN_INTEGRATIONS:  # the integration manages sessions: tenuo-cli <name> session attach
+        key = step if (":" in step or step.startswith("cron_")) else latest
+        return f"tenuo-cli {via} session attach --session {shlex.quote(str(key))} --file {shlex.quote(warrant)}"
+    client = {
+        "mcp": f'SecureMCPClient.local(warrant="{warrant}", ...)',
+        "mcp-server": f'the client that calls this server: SecureMCPClient.local(warrant="{warrant}", ...)',
+        "langchain": f'TenuoTool.local(tool, warrant="{warrant}")',
+        "temporal": f'start_workflow_authorized(..., warrant=load_warrant_chain("{warrant}"))',
+    }.get(via, "your agent's Tenuo integration")
+    return f"# give the warrant to {client}"
+
+
+def _next_steps(calls_path, steps, vias):
+    """The commands to write, check and issue a template per step, hand it over, then enforce.
 
     warrantgen is optional and installed separately, so its drafting commands are
     printed as comments under the step that works with tenuo alone.
@@ -130,20 +164,21 @@ def _next_steps(calls_path, steps):
         return ["Run your agent with tenuo-cli mode observe, then run tenuo-cli calls summary again"]
     out = []
     for step, run_times in sorted(steps.items()):
-        latest = max(run_times.items(), key=lambda item: (item[1], str(item[0])))[0]
+        latest = _latest(run_times)
+        stem = _filename(step)
+        template, warrant = f"{stem}.yaml", f"{stem}.warrant"
         base = ["template", str(calls_path), "--step", step]
-        target = ["--out", f"{step}.yaml"]
-        out.append(f"tenuo-cli template new --out {shlex.quote(step + '.yaml')}   # fill in from the summary above")
+        target = ["--out", template]
+        out.append(f"tenuo-cli template new --out {shlex.quote(template)}   # fill in from the summary above")
         out.append(f"# or draft it from the log: {WARRANTGEN} " + _command(base + ["--standing", "--ttl", "7d"] + target)
                    + "   # one warrant for every run")
         if latest is not None and len(run_times) > 1:
             out.append(f"# or: {WARRANTGEN} " + _command(base + ["--from-run", str(latest)] + target)
                        + "   # a warrant per task")
-        out.append(f"tenuo-cli template validate --file {shlex.quote(step + '.yaml')}")
-        out.append(
-            f"tenuo-cli warrant issue --template {shlex.quote(step + '.yaml')} --holder agent"
-            f" --out {shlex.quote(step + '.warrant')}"
-        )
+        out.append(f"tenuo-cli template validate --file {shlex.quote(template)}")
+        out.append(f"tenuo-cli warrant issue --template {shlex.quote(template)} --holder agent --out {shlex.quote(warrant)}")
+        for via in sorted(v for v in vias.get(step, {None}) if v) or [None]:
+            out.append(_hand_off(via, step, latest, warrant))
     out.append("tenuo-cli mode enforce")
     return out
 
@@ -184,7 +219,8 @@ def _describe(seen, *, runs=(), calls=None):
         prefix = _common_prefix(strings)
         if prefix and all("/" in v for v in strings):
             prefix = prefix[: prefix.rfind("/") + 1]  # a shared folder, not part of a name
-        if len(strings) > 1 and prefix:
+        # Only a prefix that ends at a separator (ORD-, team/, light.) says anything.
+        if len(strings) > 1 and prefix and prefix[-1] in "/._-:":
             out["common_prefix"] = prefix
     return out
 

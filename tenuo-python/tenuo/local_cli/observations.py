@@ -103,7 +103,9 @@ def summarize_calls(workspace, *, path=None, tool=None):
         for key in ("deny_reasons", "denied_on"):
             if entry[key]:
                 row[key] = dict(sorted(entry[key].items(), key=lambda item: (-item[1], item[0])))
-        row["arguments"] = {arg: _describe(seen) for arg, seen in sorted(entry["values"].items())}
+        row["arguments"] = {
+            arg: _describe(seen, runs=entry["runs"], calls=entry["calls"]) for arg, seen in sorted(entry["values"].items())
+        }
         if any(arg.get("free_text") and "values" not in arg for arg in row["arguments"].values()):
             row["see"] = f"tenuo-cli calls list --tool {shlex.quote(name)}"
         rows.append(row)
@@ -150,16 +152,23 @@ def _command(parts):
     return " ".join(shlex.quote(part) for part in parts)
 
 
-def _describe(seen):
-    """What one argument held across calls: distinct values, numeric bounds, and whether runs differ."""
+def _describe(seen, *, runs=(), calls=None):
+    """What one argument held across calls: distinct values, numeric bounds, and whether runs differ.
+
+    ``runs`` and ``calls`` are the tool's, so an argument some calls leave out
+    is reported as such (``absent_in_calls``) and never as the same in every run.
+    """
     values = [value for _, value in seen]
     keys = {json.dumps(value, sort_keys=True, default=str) for value in values}
     out = {"distinct": len(keys)}
+    if calls is not None and calls > len(seen):
+        out["absent_in_calls"] = calls - len(seen)  # an optional argument
     by_run = {}
     for run, value in seen:
         by_run.setdefault(run, set()).add(json.dumps(value, sort_keys=True, default=str))
-    if len(by_run) > 1:
-        out["same_in_every_run"] = len({frozenset(v) for v in by_run.values()}) == 1
+    all_runs = set(runs) | set(by_run)
+    if len(all_runs) > 1:
+        out["same_in_every_run"] = len(by_run) == len(all_runs) and len({frozenset(v) for v in by_run.values()}) == 1
     numbers = [v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
     if numbers and len(numbers) == len(values):
         out["min"], out["max"] = min(numbers), max(numbers)

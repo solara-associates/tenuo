@@ -12,7 +12,8 @@ def local_langchain_tool(tool, *, path=None, warrant=None, key="agent", step=Non
     class LocalTool(TenuoTool):
         def _check_authorization(self, arguments):
             if authority.observing:
-                authority.observe(self.name, arguments, step=step)
+                authority.observe(self.name, arguments, step=step,
+                                  require_constraints=self.strict, schemas=self._schemas)
                 return
             authority.require_warrant()
             with authority.scope() as (snapshot, session, approvals):
@@ -30,7 +31,8 @@ def local_langchain_tool(tool, *, path=None, warrant=None, key="agent", step=Non
 
         async def _acheck_authorization(self, arguments):
             if authority.observing:
-                authority.observe(self.name, arguments, step=step)
+                authority.observe(self.name, arguments, step=step,
+                                  require_constraints=self.strict, schemas=self._schemas)
                 return
             authority.require_warrant()
             with authority.scope() as (snapshot, session, approvals):
@@ -78,16 +80,18 @@ def local_mcp_client(*, path=None, warrant=None, key="agent", step=None, **kwarg
             if not warrant_context or not (inject_warrant is None or inject_warrant is True or inject_warrant == "argument"):
                 raise DocumentError("local MCP calls cannot disable warrant enforcement or presentation")
             if authority.observing:
-                observed = authority.observe(tool_name, arguments, step=step)
-                # Present the warrant when there is one, so the server can
-                # check it too; never authorize or block here.
+                observed = authority.observe(tool_name, arguments, step=step, approvals=approvals)
+                # Present the warrant when there is a live one, so the server
+                # can check it too; never authorize or block here. An expired
+                # warrant isn't presented: the client would refuse the call.
                 with ExitStack() as stack:
                     present = False
                     if observed is not None and observed["warrant_id"] is not None:
                         try:
                             snapshot = authority.snapshot(verify=False)
-                            stack.enter_context(authority.scope(snapshot))
-                            present = True
+                            if snapshot.chain and not snapshot.chain[-1].is_expired():
+                                stack.enter_context(authority.scope(snapshot))
+                                present = True
                         except Exception:
                             pass
                     return await super().call_tool(

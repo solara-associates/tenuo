@@ -152,12 +152,12 @@ class TenuoPluginConfig:
         authority.started_observing = authority.observing
         if authority.started_observing:
             # Observe maps onto dry_run: denials are logged and the activity
-            # runs. Each decision is also recorded, with its arguments, to the
-            # workspace's observations.jsonl, which needs argument values
-            # (it is readable by its owner only).
+            # runs. The interceptor records each decision, with its arguments,
+            # to the workspace's observations.jsonl (readable by its owner
+            # only); audit callbacks and redaction settings are unchanged.
             kwargs["dry_run"] = True
-            kwargs.setdefault("redact_args_in_logs", False)
-            kwargs["audit_callback"] = _observation_recorder(authority, kwargs.get("audit_callback"))
+            if kwargs.pop("approval_handler", None) is not None:
+                logger.warning("Tenuo observe: approval_handler is ignored; an unmet gate is recorded and the activity runs")
         snapshot = authority.snapshot()
         return cls(signing_key=snapshot.key, trusted_roots=snapshot.roots, revocation_list=snapshot.srl,
                    _local_authority=authority, **kwargs)
@@ -734,26 +734,3 @@ class TenuoPluginConfig:
             self.activity_fns
         )
 
-
-def _observation_recorder(authority, forward=None):
-    """An audit callback that records each decision to observations.jsonl."""
-
-    def record(event):
-        try:
-            decision = str(event.decision).lower()
-            authority.record(
-                event.tool,
-                event.arguments or {},
-                decision=decision,
-                reason=None if decision == "allow" else ("constraint_violation" if event.constraint_violated else "denied"),
-                warrant_id=event.warrant_id or None,
-                argument=None if decision == "allow" else (event.constraint_violated or None),
-                run=event.workflow_run_id,
-                step="+".join(sorted(event.warrant_capabilities or [])) or None,
-            )
-        except Exception:
-            logger.warning("Tenuo observe: could not record a Temporal decision", exc_info=True)
-        if forward is not None:
-            forward(event)
-
-    return record

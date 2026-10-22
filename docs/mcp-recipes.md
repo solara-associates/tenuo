@@ -7,8 +7,8 @@ description: Warrants for jobs agents run through MCP servers, deployed with ten
 
 Each recipe lets an agent do one job through an MCP server on its own, with a
 warrant that names the tools and argument values the job needs, for a set time.
-Read-only and drafts-only you can already get from OAuth scopes; these start
-where a scope can't say "this thread", "this branch" or "for an hour".
+Read-only you can already get from OAuth scopes; these start where a scope
+can't say "this thread", "this branch" or "for an hour".
 
 ## Reply to a thread (Google Workspace MCP)
 
@@ -41,18 +41,27 @@ capabilities:
     body_format: {optional: [plain, html]}
 ```
 
-Workspace MCP is built on FastMCP, so the server checks every call itself:
+The recipient is the boundary. Subject and reply headers aren't pinned, so a
+reply Gmail doesn't thread still goes only to `to`.
+
+Workspace MCP is built on FastMCP, so the server checks every call itself.
+Issue the warrant and turn enforcement on:
 
 ```bash
-tenuo-cli init --dev && tenuo-cli mode observe
-python -m tenuo.mcp.wrap --home ~/.tenuo workspace-mcp --tools gmail
+tenuo-cli init --dev
 tenuo-cli warrant issue --template reply.yaml --holder agent --out reply.warrant \
   --set me=you@yourco.com --set thread=18f2a9c0d1e2b3a4 --set to=bob@vendor.com
 tenuo-cli mode enforce
 ```
 
-The agent presents the warrant with `SecureMCPClient.local(warrant="reply.warrant", ...)`
+Then have the agent's MCP client launch the server through the wrapper,
+`python -m tenuo.mcp.wrap --home ~/.tenuo workspace-mcp --tools gmail`, and
+present the warrant with `SecureMCPClient.local(warrant="reply.warrant", ...)`
 or a framework MCP adapter with Tenuo ([calling it](fastmcp-servers.md#calling-it)).
+To see what the agent sends before you write a warrant, run
+`tenuo-cli mode observe` first and check `tenuo-cli calls summary`; the
+wrapper picks up mode changes without a restart.
+
 Checked against workspace-mcp's own tools:
 
 | Call | Result |

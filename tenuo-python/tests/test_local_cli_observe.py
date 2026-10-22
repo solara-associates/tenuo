@@ -514,8 +514,14 @@ def test_summary_ends_with_the_hand_off_for_the_integration_that_saw_the_calls(o
                                          "via": "hermes"}
     nxt = summary["next"]
     # A person's key is attached as is; a plain chat by its latest session ID; file names are safe.
-    assert ("tenuo-cli hermes session attach --session telegram:5550001 --file telegram-5550001.warrant" in nxt)
-    assert "tenuo-cli hermes session attach --session 20261022_1000_bb --file hermes.warrant" in nxt
+    assert "tenuo-cli hermes session attach --session telegram:5550001 --template telegram-5550001.yaml" in nxt
+    assert "tenuo-cli hermes session attach --session 20261022_1000_bb --template hermes.yaml" in nxt
+    assert not any("--template telegram-5550001.yaml --holder" in line for line in nxt)  # attach issues it
+    (workspace.path / "recipes" / "hermes").mkdir(parents=True)
+    assert main(["--home", str(workspace.path), "--json", "calls", "summary"]) == 0
+    nxt = json.loads(capsys.readouterr().out)["next"]
+    assert any(line.startswith("# or a recipe: tenuo-cli hermes session attach --session telegram:5550001 --template ")
+               for line in nxt)
     assert any(line.startswith("# give the warrant to the client that calls this server: SecureMCPClient.local")
                for line in nxt)
     assert "tenuo-cli template new --out telegram-5550001.yaml   # fill in from the summary above" in nxt

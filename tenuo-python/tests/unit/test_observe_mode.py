@@ -268,3 +268,34 @@ def test_enforce_approval_gate_still_asks():
     )
     assert result.allowed and not result.observed
     assert len(asked) == 1
+
+
+def test_guard_runs_an_expired_warrant_in_observe_and_refuses_it_in_enforce(caplog):
+    """@guard checks expiry before the shared path; observe mode must let the call run there too."""
+    from tenuo import guard
+    from tenuo.exceptions import ExpiredError
+
+    expired = (
+        Warrant.mint_builder()
+        .capability("issue_payout", payee=Exact("ACCT-CLAIMANT"), amount=Range(0, 5000))
+        .holder(AGENT.public_key)
+        .ttl(1)
+        .mint(ISSUER)
+    )
+    time.sleep(1.2)
+    calls = []
+
+    @guard(expired, tool="issue_payout", keypair=AGENT)
+    def issue_payout(payee: str, amount: int) -> str:
+        calls.append(payee)
+        return "paid"
+
+    configure(trusted_roots=ROOTS)
+    with pytest.raises(ExpiredError):
+        issue_payout(payee="ACCT-CLAIMANT", amount=100)
+    reset_config()
+    _observe()
+    with caplog.at_level(logging.WARNING, logger="tenuo"):
+        assert issue_payout(payee="ACCT-CLAIMANT", amount=100) == "paid"
+    assert calls == ["ACCT-CLAIMANT"]
+    assert _observe_records(caplog), "the expiry is recorded as an observed denial"

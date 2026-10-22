@@ -14,6 +14,16 @@ from fastmcp import FastMCP
 
 mcp = FastMCP("wrap-test")
 
+if os.environ.get("WRAP_TEST_OWN_GUARD"):
+    # A server that already guards itself, permissively, with roots of its own.
+    from tenuo import SigningKey
+    from tenuo.mcp import MCPVerifier
+    from tenuo.mcp.fastmcp_middleware import TenuoMiddleware
+    from tenuo_core import Authorizer
+
+    own = MCPVerifier(authorizer=Authorizer(trusted_roots=[SigningKey.generate().public_key]), require_warrant=False)
+    mcp.add_middleware(TenuoMiddleware(own))
+
 
 @mcp.tool()
 async def comment(issue_key: str, body: str) -> str:

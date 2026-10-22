@@ -83,8 +83,11 @@ async def test_wrapped_server_runs_only_what_the_warrant_allows(tmp_path: Path) 
     ) as client:
         async with mint(Capability("comment", issue_key=Exact("OPS-12"), body=Wildcard())):
             await client.tools["comment"](issue_key="OPS-12", body="fixed")
+            # Skip the client's own check so the wrapped server is what refuses it.
             with pytest.raises(Exception, match="issue_key"):
-                await client.tools["comment"](issue_key="OPS-40", body="closing")
+                await client.call_tool(
+                    "comment", {"issue_key": "OPS-40", "body": "closing"}, warrant_context=False, inject_warrant=True
+                )
 
         with pytest.raises(Exception, match="No warrant provided"):
             await client.call_tool(
@@ -92,6 +95,25 @@ async def test_wrapped_server_runs_only_what_the_warrant_allows(tmp_path: Path) 
             )
 
     assert log.read_text().splitlines() == ["OPS-12 fixed"]
+
+
+@pytest.mark.skipif(not FASTMCP_SERVER_AVAILABLE, reason=FASTMCP_SERVER_SKIP_REASON)
+@pytest.mark.asyncio
+async def test_a_servers_own_guard_does_not_replace_the_wrappers(tmp_path: Path) -> None:
+    log = tmp_path / "calls.log"
+    log.touch()
+    key = SigningKey.generate()
+    env = _env(TENUO_TRUSTED_ROOT=key.public_key.to_bytes().hex(), WRAP_TEST_LOG=str(log), WRAP_TEST_OWN_GUARD="1")
+
+    async with SecureMCPClient(
+        command=sys.executable, args=["-m", "tenuo.mcp.wrap", "fastmcp_wrap_server:main"], env=env
+    ) as client:
+        with pytest.raises(Exception, match="No warrant provided"):
+            await client.call_tool(
+                "comment", {"issue_key": "OPS-12", "body": "x"}, warrant_context=False, inject_warrant=False
+            )
+
+    assert log.read_text() == ""
 
 
 def test_server_not_built_on_fastmcp_is_refused() -> None:

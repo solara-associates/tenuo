@@ -53,7 +53,7 @@ def summarize_calls(workspace, *, path=None, tool=None):
     """Per tool: how often it ran, what enforcement would have decided, and what each argument held.
 
     Deterministic counting over the recorded calls; nothing is inferred or
-    suggested beyond the numbers. Draft a warrant from them with warrantgen.
+    suggested beyond the numbers. Write a template from them, or draft one with warrantgen.
     """
     tools = {}
     runs = set()
@@ -104,6 +104,8 @@ def summarize_calls(workspace, *, path=None, tool=None):
             if entry[key]:
                 row[key] = dict(sorted(entry[key].items(), key=lambda item: (-item[1], item[0])))
         row["arguments"] = {arg: _describe(seen) for arg, seen in sorted(entry["values"].items())}
+        if any(arg.get("free_text") and "values" not in arg for arg in row["arguments"].values()):
+            row["see"] = f"tenuo-cli calls list --tool {shlex.quote(name)}"
         rows.append(row)
     return {
         "tools": rows,
@@ -113,18 +115,28 @@ def summarize_calls(workspace, *, path=None, tool=None):
     }
 
 
+WARRANTGEN = "uvx --from git+https://github.com/RajanChavada/warrantgen warrantgen"
+
+
 def _next_steps(calls_path, steps):
-    """The exact commands to draft, check and issue a template per step, then enforce."""
+    """The exact commands to write, check and issue a template per step, then enforce.
+
+    warrantgen is optional and installed separately, so its drafting commands are
+    printed as comments under the step that works with tenuo alone.
+    """
     if not steps:
         return ["Run your agent with tenuo-cli mode observe, then run tenuo-cli calls summary again"]
     out = []
     for step, run_times in sorted(steps.items()):
         latest = max(run_times.items(), key=lambda item: (item[1], str(item[0])))[0]
-        base = ["warrantgen", "template", str(calls_path), "--step", step]
+        base = ["template", str(calls_path), "--step", step]
         target = ["--out", f"{step}.yaml"]
-        out.append(_command(base + ["--standing", "--ttl", "7d"] + target) + "   # one warrant for every run")
+        out.append(f"tenuo-cli template new --out {shlex.quote(step + '.yaml')}   # fill in from the summary above")
+        out.append(f"# or draft it from the log: {WARRANTGEN} " + _command(base + ["--standing", "--ttl", "7d"] + target)
+                   + "   # one warrant for every run")
         if latest is not None and len(run_times) > 1:
-            out.append(_command(base + ["--from-run", str(latest)] + target) + "   # or a warrant per task")
+            out.append(f"# or: {WARRANTGEN} " + _command(base + ["--from-run", str(latest)] + target)
+                       + "   # a warrant per task")
         out.append(f"tenuo-cli template validate --file {shlex.quote(step + '.yaml')}")
         out.append(
             f"tenuo-cli warrant issue --template {shlex.quote(step + '.yaml')} --holder agent"
@@ -155,6 +167,8 @@ def _describe(seen):
     if strings and len(strings) == len(keys):
         if any(_free_text(v) for v in strings):
             out["free_text"] = True
+            if len(strings) <= MAX_LISTED_VALUES and all(len(v) <= FREE_TEXT_LEN for v in strings):
+                out["values"] = strings  # a few short commands or queries: exactly what an allowlist needs
             return out
         if len(strings) <= MAX_LISTED_VALUES:
             out["values"] = strings

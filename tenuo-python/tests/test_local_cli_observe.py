@@ -1,6 +1,8 @@
 """Observe mode: local adapters block nothing and record each call for drafting a warrant."""
 
 import json
+
+from tenuo.local_cli.observations import MAX_LISTED_VALUES as MAX
 import stat
 import time
 from types import SimpleNamespace
@@ -406,13 +408,30 @@ def test_summary_reads_paths_as_folders_skips_prose_and_prints_next_commands(obs
     summary = json.loads(capsys.readouterr().out)
     by_tool = {row["tool"]: row["arguments"] for row in summary["tools"]}
     assert by_tool["read_file"]["path"]["common_prefix"] == "/data/reports/"
-    assert by_tool["write_file"]["content"] == {"distinct": 2, "same_in_every_run": False, "free_text": True}
+    # Two short prose values are listed: a command allowlist is built from exactly these.
+    assert by_tool["write_file"]["content"] == {
+        "distinct": 2, "same_in_every_run": False, "free_text": True, "values": ["# q2 summary\n", "# q3 summary\n"]}
     calls = workspace.path / "observations.jsonl"
-    assert summary["next"][:2] == [
-        f"warrantgen template {calls} --step hermes --standing --ttl 7d --out hermes.yaml   # one warrant for every run",
-        f"warrantgen template {calls} --step hermes --from-run nightly-1 --out hermes.yaml   # or a warrant per task",
-    ]
+    # The first step works with tenuo alone; warrantgen is optional and comes as a comment.
+    assert summary["next"][0] == "tenuo-cli template new --out hermes.yaml   # fill in from the summary above"
+    assert summary["next"][1] == (
+        f"# or draft it from the log: uvx --from git+https://github.com/RajanChavada/warrantgen warrantgen"
+        f" template {calls} --step hermes --standing --ttl 7d --out hermes.yaml   # one warrant for every run")
+    assert summary["next"][2].startswith("# or: uvx ") and "--from-run nightly-1" in summary["next"][2]
     assert summary["next"][-1] == "tenuo-cli mode enforce"
+
+
+def test_summary_points_to_calls_list_when_prose_is_hidden(observing, capsys):
+    workspace, _ = observing
+    from tenuo.local_cli.runtime import LocalAuthority
+
+    authority = LocalAuthority(path=workspace.path, announce=False)
+    for n in range(MAX + 1):
+        authority.record("terminal", {"command": f"pytest -q tests/test_{n}.py"}, run="r", step="dev")
+    assert main(["--home", str(workspace.path), "--json", "calls", "summary"]) == 0
+    row = json.loads(capsys.readouterr().out)["tools"][0]
+    assert row["arguments"]["command"] == {"distinct": MAX + 1, "free_text": True}
+    assert row["see"] == "tenuo-cli calls list --tool terminal"
 
 
 def test_init_points_to_observe_first(tmp_path, capsys):

@@ -39,6 +39,9 @@ development guardrail, not OS isolation.
 
 ## Lifecycle choices
 
+- **Review:** `template validate` and `warrant issue` print a short review;
+  `warrant review --file PATH --json` gives the full one, with attack inputs
+  the native check allows. Fix high findings before wiring the warrant in.
 - **Inspect:** `warrant show` decodes; `warrant verify` separately checks the full
   chain, trust, expiry and current SRL. `warrant list` inventories local files,
   not every grant issued anywhere. `audit list`/`audit verify` inspect native
@@ -59,7 +62,7 @@ development guardrail, not OS isolation.
   scope, extend the warrant or bypass revocation; it is reusable for the same
   call until expiry, not inherently one-use.
 - **Attach:** Hermes shared-local mode reports its session ID on a blocked call.
-  An operator uses `session attach --session ID --file WARRANT`; attachments
+  An operator uses the integration's command (`tenuo-cli hermes session attach --session ID --file WARRANT`); attachments
   survive turns and reload without gateway restart. A child session needs its
   own attachment. Several grants cannot be unioned to authorize one call.
   Attachment routes signed authority; it does not activate it.

@@ -172,6 +172,7 @@ def test_show_prints_constraints_in_template_syntax(setup):
         "read_file": {"path": {"subpath": "/srv/app"}},
         "search": {"scope": ["docs", "code"], "glob": {"pattern": "*.md"}, "id": {"regex": "^d-[0-9]+$"}},
         "fetch": {"url": {"url_pattern": "https://api.example.com/*"}, "limit": "..50", "mode": {"exact": "any"}},
+        "review": {"pull": [57, 58], "page": {"optional": "1..10"}, "offset": {"optional": "any"}},
     }
     template = WarrantTemplate({"version": 2, "ttl": "10m", "capabilities": capabilities})
     shown = describe(issue(workspace, template, workspace.public_key("agent")))
@@ -200,3 +201,21 @@ def test_reissue_reports_its_check(setup, capsys):
     reissued = json.loads(capsys.readouterr().out)["warrant"]
     assert reissued["id"] != wid
     assert reissued["verified"] is True
+
+
+def test_issue_replace_swaps_an_existing_out_file(setup, capsys):
+    from tenuo.local_cli.commands import main as cli
+    from tenuo.local_cli.warrants import load_chain
+
+    workspace, template = setup
+    home, out = workspace.path, workspace.path.parent / "agent.warrant"
+    assert cli(["--home", str(home), "--json", "warrant", "issue", "--template", str(template),
+                "--holder", "agent", "--out", str(out)]) == 0
+    first = load_chain(out)[-1].id
+    capsys.readouterr()
+    assert cli(["--home", str(home), "--json", "warrant", "issue", "--template", str(template),
+                "--holder", "agent", "--out", str(out)]) == 1
+    assert "--replace" in capsys.readouterr().out
+    assert cli(["--home", str(home), "--json", "warrant", "issue", "--template", str(template),
+                "--holder", "agent", "--out", str(out), "--replace"]) == 0
+    assert load_chain(out)[-1].id != first

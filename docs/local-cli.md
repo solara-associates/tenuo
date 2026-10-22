@@ -28,7 +28,7 @@ The default workspace is `~/.tenuo/`, outside your project. Change it with
 
 | Path | Purpose |
 | --- | --- |
-| `config.yaml` | Strict versioned configuration, defaulting to enforcement |
+| `config.yaml` | Strict versioned configuration: `mode` is `enforce` (default) or `observe` |
 | `keys/issuer.key` | Issuer (root) private key: signs warrants |
 | `keys/agent.key` | Agent holder key: proves possession of its warrants |
 | `keys/approver.key` | Approver private key: signs held calls |
@@ -36,8 +36,9 @@ The default workspace is `~/.tenuo/`, outside your project. Change it with
 | `trust/*.pub` | Trusted roots: issuer public keys the verifier accepts |
 | `revocations.srl` | Core signed revocation list in native CBOR |
 | `warrants/` | Issued warrant chains |
-| `sessions/` | Explicit operator-controlled session attachments |
+| `sessions/` | Session attachments, managed by the integration (e.g. `tenuo-cli hermes session`) |
 | `requests/`, `approvals/` | Portable requests and responses |
+| `observations.jsonl` | Calls recorded in observe mode, with argument values |
 
 Private files are created with mode `0600`, and the workspace ignores its
 contents in Git. No signing secrets are written to the application's `.env`.
@@ -128,6 +129,16 @@ one order and a bounded refund. Use real registered tool and argument names.
 Loading a template does not grant any authority. Changing it does not change
 previously issued warrants.
 
+A plain string is an exact value, so `order_id: A-*` matches only the literal
+`A-*`. `template validate` warns about a plain string or `one_of` entry that
+contains `*` or `?`; write `{pattern: A-*}` to match by pattern.
+
+Every argument a template names must be present, and arguments it doesn't name
+are refused. Wrap an argument a tool may leave out in `optional`: it can be
+omitted, and if it's sent it must match, e.g. `limit: {optional: 1..10}` or
+`action: {optional: send}`. A list may hold integers for numeric IDs such as
+`pullNumber: [57, 58]`.
+
 ```yaml
 version: 2
 name: refunds
@@ -212,6 +223,41 @@ Issuing a warrant does not attach it to a running session or workflow. Deliver
 the selected file through the integration's explicit warrant configuration.
 Nothing automatically selects the newest warrant or combines stored grants.
 
+## Review what a warrant allows
+
+`template validate` and `warrant issue` end with a short review. For the whole
+review of a template or an issued warrant:
+
+```bash
+tenuo-cli warrant review --file agent.yaml
+tenuo-cli warrant review --file ~/.tenuo/agent.warrant
+```
+
+```yaml
+review:
+  summary: '5 tools, valid for 8h: 4 high, 2 medium, 2 low'
+  allows:
+    read_file:
+      path: glob "src/*" (compares text; does not resolve ..)
+  findings:
+  - severity: high
+    tool: read_file
+    argument: path
+    problem: 'Paths outside the intended directory get through: ...'
+    allowed_inputs:
+    - src/../.env
+    fix: 'Use {subpath: /absolute/project/dir}, which resolves ..'
+```
+
+Each argument's constraint is explained in plain language. Findings come from
+the constraint type and the argument's name (paths, URLs, commands, amounts,
+recipients). `allowed_inputs` are attack inputs, such as traversal, secrets,
+cloud metadata URLs and shell commands, that the argument's native constraint
+check accepts: the same check a verifier runs. An empty list means no known
+pattern got through, not that the warrant is safe for the task. Review decodes
+without verifying; use `warrant verify` for trust, expiry and revocation. It
+reviews the leaf of a delegated chain, which bounds what the holder can do.
+
 ## Approve a held call using files
 
 An integration writes an `approval-request` YAML file containing the complete
@@ -270,15 +316,17 @@ each call the adapter reloads the selected warrant, trust and revocation files,
 verifies the full chain, and checks the holder. Missing or malformed data denies
 that call. Rollbacks below the accepted SRL version are refused for the lifetime
 of that adapter; this does not persist a version floor across process restarts.
-Replacing the selected file therefore needs no agent restart. Updating files
+Replacing the selected file therefore needs no agent restart:
+`tenuo-cli warrant issue --template T.yaml --holder agent --out agent.warrant --replace`
+swaps it atomically, and the next call uses the new warrant. Updating files
 is an operator action: an agent must not be able to edit them.
 
 Approval-gated calls write requests under `~/.tenuo/requests/`. The approval CLI's
 default response path is `~/.tenuo/approvals/<request_hash>.yaml`; retrying the
 same call reads and verifies it. Decisions generate native signed receipts in
 the configured `receipts.jsonl` using the existing SDK receipt machinery.
-Local adapters currently support enforcement mode only and never read the
-issuer or approver private key. This is an in-process guardrail: expose
+Local adapters never read the issuer or approver private key. To see what an
+agent calls before writing its warrant, start in [observe mode](#observe-first). This is an in-process guardrail: expose
 effects through a separately protected service if agent code can bypass wrappers.
 
 ## MCP client and server
@@ -311,8 +359,8 @@ For signed server receipts, create a separate server identity and pass its
 name or private-key path as `MCPVerifier.local(key=...)`. Without it the server
 still verifies calls but does not produce local signed receipts.
 
-Both paths reread verification files per call and fail closed. The local client
-always enforces and presents its authority; it refuses `warrant_context=False`
+Both paths reread verification files per call and fail closed. In enforce mode
+the local client always checks and presents its authority; it refuses `warrant_context=False`
 and disabled warrant injection. File approvals acquired on the client are
 forwarded to the server as native signed approvals. A client check alone is an
 in-process guardrail; server mediation protects the MCP dispatch path. Neither
@@ -353,6 +401,78 @@ Nexus trust refresh and attaching replacement warrants to running workflows are
 separate lifecycle features; this adapter does not claim to implement them.
 Issuing another file leaves an already running workflow's warrant unchanged.
 
+## Observe first
+
+Before you have a warrant, run the agent with the workspace in observe mode.
+Local adapters then block nothing. Each call is recorded, with its arguments and
+the decision enforcement would have made, so you can draft a warrant from what
+the agent actually did.
+
+```bash
+tenuo-cli mode observe
+# run the agent for a few tasks
+tenuo-cli calls summary
+tenuo-cli calls list --tool get_order
+```
+
+In observe mode the LangChain tool and the MCP client may be created without
+`warrant=`. Calls recorded without one have `"decision": null` and
+`"reason": "no_warrant"`. With a warrant, a call outside its scope runs and is
+recorded as `"deny"` with the reason, such as a violated constraint, an expired
+or revoked warrant, or `approval_required`. No approval request is written.
+An `MCPVerifier.local` server in observe mode runs calls whether or not they
+carry a warrant; when both client and server use the workspace, each records
+the call it saw. `TenuoPluginConfig.local` maps observe mode onto `dry_run` and
+records each activity decision with its argument values.
+
+Calls go to `observations.jsonl` in the workspace, one JSON object per line,
+created readable by its owner only because it holds argument values. Each line
+has `run`, `step`, `tool` and `args`, the format
+[warrantgen](https://github.com/RajanChavada/warrantgen) reads to draft
+a template from recorded calls, plus `decision`, `reason`, `warrant_id`,
+`argument` (for a constraint denial, the name of the argument that failed) and
+`observed_at`. `run` is one process, or the Temporal workflow run; set
+`TENUO_RUN_ID` to group calls differently, for example one value per task in a
+long-lived agent.
+Pass `step=` to `TenuoTool.local`, `SecureMCPClient.local` or
+`MCPVerifier.local` to group calls that will share one warrant.
+
+`tenuo-cli calls summary` counts the recorded calls per tool: how many ran, in
+how many runs, what enforcement would have decided and why, and which
+arguments denials failed on (`denied_on`). For each argument it shows how many
+distinct values it took, the minimum and maximum of numbers, the values
+themselves when there are five or fewer strings and any prefix they share, and
+whether every run used the same values (`same_in_every_run`). An argument that
+differs between runs usually belongs in the warrant issued for each task; one
+that never changes can be fixed in the template. Strings with whitespace are
+marked `free_text`; they're still listed when there are five or fewer short
+ones (a handful of shell commands is exactly what a command allowlist needs),
+and otherwise the row points to `tenuo-cli calls list --tool NAME`. A prefix
+shared by paths stops at a folder. The summary is plain counting over the file;
+it does not suggest a policy. It ends with the commands for each recorded step:
+`tenuo-cli template new` to write a template from the summary, then validate,
+issue and enforce. Drafting from the log with
+[warrantgen](https://github.com/RajanChavada/warrantgen) is optional and
+installed separately; its commands are printed as comments
+(`uvx --from git+https://github.com/RajanChavada/warrantgen warrantgen template …`):
+`--standing` drafts one warrant that covers every run seen (a cron job, a shared
+server, a long chat), `--from-run` a warrant for one run's task.
+`tenuo-cli calls list` shows the recorded calls themselves.
+
+Observe mode writes no signed receipts: receipts don't yet record the mode, so
+an observed denial would read as an enforced one.
+
+When the warrant is ready, switch back:
+
+```bash
+tenuo-cli mode enforce
+```
+
+LangChain, MCP client and MCP server adapters read the mode before every call,
+so the switch applies to the next call. Temporal fixes `dry_run` when the worker
+starts: after a switch the worker refuses protected activities until it is
+restarted. `tenuo-cli doctor` warns while the workspace is in observe mode.
+
 `tenuo.local` exposes shared key/public-key/SRL readers and
 `load_warrant_chain`; they use the same implementation as the common CLI.
 Local signed receipt delivery reports storage failures in logs rather than
@@ -382,16 +502,36 @@ update the runtime key selection and deliver the new grants. Revoke known old
 warrant IDs explicitly. Rotating a key does not revoke unknown grants elsewhere;
 they remain bounded by their signed expiry and the verifiers' revocation data.
 
-## Session attachments
+## Integration commands
 
-For a session-based agent, issuance and attachment are different operations:
+An integration package can add a command group under `tenuo-cli`, named after
+the integration, so everything stays behind one command:
 
 ```bash
-tenuo-cli session attach --session chat-a --file ~/.tenuo/agent.warrant
-tenuo-cli session list
-tenuo-cli session show --session chat-a
-tenuo-cli session detach --session chat-a --id tnu_wrt_REAL_ID
+pip install hermes-tenuo
+tenuo-cli hermes setup
+tenuo-cli hermes session attach --session cron_1a2b3c --file briefing.warrant
 ```
+
+`tenuo-cli --home DIR hermes …` passes the workspace on as `TENUO_HOME`, and
+`--json` as `TENUO_JSON=1`; an integration should honor both. Without
+the package, `tenuo-cli hermes` says which one to install. A package registers
+its group as a `tenuo.cli` entry point whose function receives the remaining
+arguments:
+
+```toml
+[project.entry-points."tenuo.cli"]
+hermes = "hermes_tenuo.cli:tenuo_cli"
+```
+
+Built-in commands always take precedence over an integration's name.
+
+## Session attachments
+
+For a session-based agent, issuance and attachment are different operations.
+Sessions belong to the integration, so the integration adds the commands; for
+Hermes that's `tenuo-cli hermes session attach|list|show|detach`.
+Code uses `tenuo.local.attach`, `detach`, `read_session` and `list_sessions`.
 
 Use the session identifier reported by the integration. Attachment verifies the
 chain and the selected agent's **public** key (`--holder agent` by default),

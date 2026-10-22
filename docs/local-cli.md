@@ -472,7 +472,8 @@ tenuo-cli hermes setup
 tenuo-cli hermes session attach --session cron_1a2b3c --file briefing.warrant
 ```
 
-`tenuo-cli --home DIR hermes …` passes the workspace on as `TENUO_HOME`. Without
+`tenuo-cli --home DIR hermes …` passes the workspace on as `TENUO_HOME`, and
+`--json` as `TENUO_JSON=1`; an integration should honor both. Without
 the package, `tenuo-cli hermes` says which one to install. A package registers
 its group as a `tenuo.cli` entry point whose function receives the remaining
 arguments:

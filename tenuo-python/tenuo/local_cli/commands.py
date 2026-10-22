@@ -24,7 +24,8 @@ from .workspace import Workspace
 
 # Integrations add a command group under their own name, the way kubectl and gh
 # take plugins: a package registers a `tenuo.cli` entry point whose function
-# receives the rest of the command line. Known ones get an install hint.
+# receives the rest of the command line. The global options reach it as
+# TENUO_HOME and TENUO_JSON=1. Known ones get an install hint.
 KNOWN_INTEGRATIONS = {"hermes": "hermes-tenuo"}
 
 
@@ -142,6 +143,8 @@ def run_integration(opts):
         return 2
     if opts.home:
         os.environ["TENUO_HOME"] = opts.home
+    if opts.json:
+        os.environ["TENUO_JSON"] = "1"
     return entry.load()(opts.args) or 0
 
 

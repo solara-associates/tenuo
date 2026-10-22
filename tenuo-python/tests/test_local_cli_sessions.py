@@ -75,10 +75,17 @@ def test_session_commands_belong_to_the_integration(session, capsys, monkeypatch
         def load(self):
             return lambda argv: seen.append((argv, os.environ.get("TENUO_HOME"))) or 0
 
-    monkeypatch.delenv("TENUO_HOME", raising=False)
+    # Set, so monkeypatch restores both after the test instead of leaking them.
+    monkeypatch.setenv("TENUO_HOME", "unset")
+    monkeypatch.setenv("TENUO_JSON", "0")
     monkeypatch.setattr(commands, "integrations", lambda: {"hermes": Entry(), "init": Entry()})
     assert main(["--home", str(workspace.path), "hermes", "session", "attach", "--session", "s", "--help"]) == 0
     assert seen == [(["session", "attach", "--session", "s", "--help"], str(workspace.path))]
+    assert os.environ["TENUO_JSON"] == "0"
+    # The global --json reaches the integration as TENUO_JSON=1.
+    assert main(["--home", str(workspace.path), "--json", "hermes", "session", "list"]) == 0
+    assert seen[-1][0] == ["session", "list"] and os.environ.get("TENUO_JSON") == "1"
+    seen.pop()
     # An integration can't take over a built-in command: this is the real init,
     # refusing the existing workspace.
     assert main(["--home", str(workspace.path), "init", "--dev"]) == 1

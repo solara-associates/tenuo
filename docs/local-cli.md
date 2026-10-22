@@ -568,8 +568,8 @@ separate server identity. Recognition is an operator trust decision, not a
 verified human identity.
 
 The command checks signatures and recorded predecessor links. It does **not**
-prove a complete history: adapter instances and restarts can start new streams,
-and missing unlinked streams or a removed tail cannot be detected from that
-file alone. Receipts commit to arguments; they do not include all raw arguments
+prove a complete history. Calls in one process form one chain; each process
+or restart starts a new one, and `verify` reports how many (`chains`). A missing
+chain or a removed tail can't be detected from that file alone. Receipts commit to arguments; they do not include all raw arguments
 or prove that an allowed effect completed. Use the integration's log or tool
 result for detailed arguments and the denial message.

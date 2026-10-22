@@ -99,4 +99,4 @@ def test_session_commands_belong_to_the_integration(session, capsys, monkeypatch
 def test_global_options_are_not_abbreviated(capsys):
     with pytest.raises(SystemExit):
         main(["--ho", "/tmp/x", "doctor"])
-    assert "unrecognized arguments: --ho" in capsys.readouterr().err
+    assert "invalid choice: '/tmp/x'" in capsys.readouterr().err

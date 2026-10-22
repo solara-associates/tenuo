@@ -1187,12 +1187,19 @@ class TenuoActivityInboundInterceptor:
         # -- 4. Unauthenticated Execution Handling --
         if warrant is None:
             if self._config.require_warrant:
+                if is_unwarranted_activity(info.activity_type, self._config) and headers:
+                    # Authority headers without a warrant (a chain, a PoP,
+                    # approvals) are malformed, not "no authority": refuse
+                    # rather than run the allowlisted activity regardless.
+                    reason = "Tenuo authority headers present without a warrant"
+                    self._emit_malformed_warrant_denial_event(info=info, reason=reason, start_ns=start_ns)
+                    raise self._wrap_as_non_retryable(ChainValidationError(reason=reason, depth=0))
                 if is_unwarranted_activity(info.activity_type, self._config):
                     # unwarranted_activities allowlist: internal plumbing
                     # this worker chose to run without a warrant. Only
-                    # reached with warrant is None — an activity in this
-                    # list that DOES present a warrant falls through to
-                    # normal verification below, unaffected.
+                    # reached with warrant is None and no Tenuo headers — an
+                    # activity in this list that DOES present a warrant falls
+                    # through to normal verification below, unaffected.
                     logger.debug(
                         "Activity %s allowed without a warrant "
                         "(unwarranted_activities allowlist)",
@@ -1765,22 +1772,24 @@ class TenuoActivityInboundInterceptor:
         mcp_patterns = (
             self._config.mcp_call_tool_activities if self._config else ()
         )
+        if not (mcp_patterns and is_mcp_call_tool_activity(activity_type, mcp_patterns)):
+            # Only wrapper activities change extraction; every other activity
+            # keeps the argument-key header path it was signed with.
+            return default_tool_name, self._extract_arguments(input, headers)
 
-        if mcp_patterns:
-            if activity_fn is None:
-                raise TenuoContextError(
-                    "TenuoPluginConfig.mcp_call_tool_activities is configured but "
-                    f"the activity function for {activity_type!r} could not be "
-                    "resolved (input.fn is None), so inbound argument extraction "
-                    "can't safely match parameter names."
-                )
-            args = _args_to_dict_by_fn(getattr(input, "args", ()) or (), activity_fn)
-        else:
-            args = self._extract_arguments(input, headers)
+        if activity_fn is None:
+            raise TenuoContextError(
+                "TenuoPluginConfig.mcp_call_tool_activities is configured but "
+                f"the activity function for {activity_type!r} could not be "
+                "resolved (input.fn is None), so inbound argument extraction "
+                "can't safely match parameter names."
+            )
+        args = _args_to_dict_by_fn(getattr(input, "args", ()) or (), activity_fn)
 
-        tool_name = default_tool_name
-        if mcp_patterns and is_mcp_call_tool_activity(activity_type, mcp_patterns):
-            tool_name, args = unwrap_mcp_call_tool(activity_type, args)
+        tool_name, args = unwrap_mcp_call_tool(activity_type, args)
+        # The workflow signed the inner arguments normalized for PoP (nested
+        # values as canonical JSON); check the same form here.
+        args = _normalize_args_for_pop(args)
         return tool_name, args
 
     def _extract_arguments(

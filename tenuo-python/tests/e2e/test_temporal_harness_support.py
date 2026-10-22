@@ -165,7 +165,9 @@ class TestUnwarrantedActivitiesConfig:
 
     @pytest.mark.parametrize(
         "pattern",
-        ["*-call-tool-v2", "*call-tool-v2", "call-tool-v2", "*-stateful-call-tool-v2"],
+        ["*-call-tool-v2", "*call-tool-v2", "call-tool-v2", "*-stateful-call-tool-v2",
+         # Any server's call-tool activity, not only sample names:
+         "payments-*", "payments-call-tool-v2", "acme-*-call-tool-v2", "acme-*-v2", "*tool-v2", "*-call-tool-*"],
     )
     def test_mcp_shaped_pattern_rejected(self, pattern):
         with pytest.raises(ConfigurationError):
@@ -233,6 +235,21 @@ class TestUnwarrantedActivitiesInbound:
         with patch("temporalio.activity.info", return_value=info):
             result = _run(ai.execute_activity(inp))
         assert result == "ok"
+
+    def test_allowlisted_activity_with_orphan_authority_headers_is_refused(self):
+        """A chain header without a warrant is malformed authority, not an unwarranted call."""
+        from temporalio.api.common.v1 import Payload
+
+        control = SigningKey.generate()
+        ai, nxt = self._make(control, ["invoke_model_activity"])
+        info = FakeActivityInfo(activity_type="invoke_model_activity")
+        inp = FakeExecuteActivityInput(fn=lambda: None, args=(),
+                                       headers={"x-tenuo-warrant-chain": Payload(data=b"garbage")})
+        with patch("temporalio.activity.info", return_value=info):
+            with pytest.raises(ApplicationError) as exc_info:
+                _run(ai.execute_activity(inp))
+            _assert_non_retryable(exc_info, match="without a warrant")
+        nxt.execute_activity.assert_not_called()
 
     def test_non_allowlisted_activity_with_no_warrant_still_denied(self):
         control = SigningKey.generate()
@@ -419,6 +436,43 @@ class TestMcpCallToolActivitiesInbound:
         with patch("temporalio.activity.info", return_value=info):
             result = _run(ai.execute_activity(inp))
         assert result == "ok"
+
+    def test_nested_inner_arguments_verify_as_signed(self):
+        """The workflow signs nested inner values normalized; the worker checks the same form."""
+        from tenuo.temporal._pop import _normalize_args_for_pop
+
+        control = SigningKey.generate()
+        agent = SigningKey.generate()
+        warrant = Warrant.issue(control, capabilities={"scale_cluster": {}}, ttl_seconds=3600,
+                                holder=agent.public_key)
+        inner_args = {"env": "prod", "payload": {"size": 3}}
+        act_headers = _make_activity_headers_dict(
+            tenuo_headers(warrant, "agent1"), warrant, agent, "scale_cluster", _normalize_args_for_pop(inner_args),
+        )
+        ai, nxt = self._make(control)
+        info = FakeActivityInfo(activity_type="acme-call-tool-v2")
+        wrapper = McpCallToolInput(tool_name="scale_cluster", arguments=inner_args)
+        inp = FakeExecuteActivityInput(fn=call_tool, args=(wrapper,), headers=act_headers)
+        with patch("temporalio.activity.info", return_value=info):
+            assert _run(ai.execute_activity(inp)) == "ok"
+
+    def test_other_activities_keep_header_argument_names(self):
+        """With MCP mapping on, a non-wrapper activity signed as arg0 still verifies."""
+        control = SigningKey.generate()
+        agent = SigningKey.generate()
+        warrant = Warrant.issue(control, capabilities={"read_file": {}}, ttl_seconds=3600, holder=agent.public_key)
+        act_headers = _make_activity_headers_dict(
+            tenuo_headers(warrant, "agent1"), warrant, agent, "read_file", {"arg0": "/data/a.txt"},
+        )
+
+        def read_file(path: str) -> str:
+            return path
+
+        ai, nxt = self._make(control)
+        info = FakeActivityInfo(activity_type="read_file")
+        inp = FakeExecuteActivityInput(fn=read_file, args=("/data/a.txt",), headers=act_headers)
+        with patch("temporalio.activity.info", return_value=info):
+            assert _run(ai.execute_activity(inp)) == "ok"
 
     def test_denies_when_inner_constraint_violated(self):
         from tenuo_core import OneOf

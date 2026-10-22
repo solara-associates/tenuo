@@ -158,7 +158,9 @@ class TestUnwarrantedActivitiesConfig:
 
     @pytest.mark.parametrize(
         "pattern",
-        ["*-call-tool-v2", "*call-tool-v2", "call-tool-v2", "*-stateful-call-tool-v2"],
+        ["*-call-tool-v2", "*call-tool-v2", "call-tool-v2", "*-stateful-call-tool-v2",
+         # Any server's call-tool activity, not only sample names:
+         "payments-*", "payments-call-tool-v2", "acme-*-call-tool-v2", "acme-*-v2", "*tool-v2", "*-call-tool-*"],
     )
     def test_mcp_shaped_pattern_rejected(self, pattern):
         with pytest.raises(ConfigurationError):
@@ -226,6 +228,21 @@ class TestUnwarrantedActivitiesInbound:
         with patch("temporalio.activity.info", return_value=info):
             result = _run(ai.execute_activity(inp))
         assert result == "ok"
+
+    def test_allowlisted_activity_with_orphan_authority_headers_is_refused(self):
+        """A chain header without a warrant is malformed authority, not an unwarranted call."""
+        from temporalio.api.common.v1 import Payload
+
+        control = SigningKey.generate()
+        ai, nxt = self._make(control, ["invoke_model_activity"])
+        info = FakeActivityInfo(activity_type="invoke_model_activity")
+        inp = FakeExecuteActivityInput(fn=lambda: None, args=(),
+                                       headers={"x-tenuo-warrant-chain": Payload(data=b"garbage")})
+        with patch("temporalio.activity.info", return_value=info):
+            with pytest.raises(ApplicationError) as exc_info:
+                _run(ai.execute_activity(inp))
+            _assert_non_retryable(exc_info, match="without a warrant")
+        nxt.execute_activity.assert_not_called()
 
     def test_non_allowlisted_activity_with_no_warrant_still_denied(self):
         control = SigningKey.generate()

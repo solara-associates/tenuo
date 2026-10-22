@@ -1171,12 +1171,19 @@ class TenuoActivityInboundInterceptor:
         # -- 4. Unauthenticated Execution Handling --
         if warrant is None:
             if self._config.require_warrant:
+                if is_unwarranted_activity(info.activity_type, self._config) and headers:
+                    # Authority headers without a warrant (a chain, a PoP,
+                    # approvals) are malformed, not "no authority": refuse
+                    # rather than run the allowlisted activity regardless.
+                    reason = "Tenuo authority headers present without a warrant"
+                    self._emit_malformed_warrant_denial_event(info=info, reason=reason, start_ns=start_ns)
+                    raise self._wrap_as_non_retryable(ChainValidationError(reason=reason, depth=0))
                 if is_unwarranted_activity(info.activity_type, self._config):
                     # unwarranted_activities allowlist: internal plumbing
                     # this worker chose to run without a warrant. Only
-                    # reached with warrant is None — an activity in this
-                    # list that DOES present a warrant falls through to
-                    # normal verification below, unaffected.
+                    # reached with warrant is None and no Tenuo headers — an
+                    # activity in this list that DOES present a warrant falls
+                    # through to normal verification below, unaffected.
                     logger.debug(
                         "Activity %s allowed without a warrant "
                         "(unwarranted_activities allowlist)",

@@ -86,6 +86,10 @@ def test_session_commands_belong_to_the_integration(session, capsys, monkeypatch
     assert main(["--home", str(workspace.path), "--json", "hermes", "session", "list"]) == 0
     assert seen[-1][0] == ["session", "list"] and os.environ.get("TENUO_JSON") == "1"
     seen.pop()
+    # The integration's own options reach it, before or after its subcommand.
+    for tail in (["--help"], ["--version"], ["--verbose", "session", "list"], ["session", "--help"]):
+        assert main(["--home", str(workspace.path), "hermes", *tail]) == 0
+        assert seen.pop()[0] == tail
     # An integration can't take over a built-in command: this is the real init,
     # refusing the existing workspace.
     assert main(["--home", str(workspace.path), "init", "--dev"]) == 1

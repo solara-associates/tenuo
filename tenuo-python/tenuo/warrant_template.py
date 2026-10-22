@@ -6,6 +6,7 @@ Documents describe desired authority. Only the SDK's signed warrant grants it.
 from __future__ import annotations
 
 import copy
+import json
 import math
 import re
 from pathlib import Path
@@ -121,6 +122,8 @@ def compile_constraint(value):
                 or not all(isinstance(v, str) or (isinstance(v, int) and not isinstance(v, bool)) for v in argument)):
             raise DocumentError("one_of needs a nonempty list of strings or integers")
         return OneOf(argument)
+    if kind == "exact" and isinstance(argument, int) and not isinstance(argument, bool):
+        return Exact(argument)
     constructors = {"exact": Exact, "pattern": Pattern, "subpath": Subpath, "regex": Regex, "url_pattern": UrlPattern}
     if kind in constructors and isinstance(argument, str) and "\x00" not in argument:
         if kind == "subpath" and not argument.startswith("/"):
@@ -180,19 +183,24 @@ def resolve_variables(data, values=None):
         if nested:
             raise DocumentError(f"the value of {name} contains ${{{nested[0]}}}; values are used as written")
 
-    def substitute(value, in_list=False):
+    def fill_mapping(mapping, fill_child):
+        out = {}
+        for key, item in mapping.items():
+            resolved_key = substitute(key)
+            if not isinstance(resolved_key, str):
+                raise DocumentError(f"{key!r} must fill in as a name, not {resolved_key!r}")
+            if resolved_key in out:
+                raise DocumentError(f"{resolved_key!r} appears twice once vars are filled in")
+            out[resolved_key] = fill_child(resolved_key, item)
+        return out
+
+    def substitute(value, constraint=False):
+        """``constraint``: value sits where a shorthand constraint is read (an
+        argument's value, or inside its ``optional``)."""
         if isinstance(value, dict):
-            out = {}
-            for key, item in value.items():
-                resolved_key = substitute(key)
-                if not isinstance(resolved_key, str):
-                    raise DocumentError(f"{key!r} must fill in as a name, not {resolved_key!r}")
-                if resolved_key in out:
-                    raise DocumentError(f"{resolved_key!r} appears twice once vars are filled in")
-                out[resolved_key] = substitute(item)
-            return out
+            return fill_mapping(value, lambda key, item: substitute(item, constraint and key == "optional"))
         if isinstance(value, list):
-            return [substitute(v, in_list=True) for v in value]
+            return [substitute(v) for v in value]
         if not isinstance(value, str):
             return value
         names = _VAR.findall(value)
@@ -213,13 +221,25 @@ def resolve_variables(data, values=None):
                 return str(part)
 
             filled = _VAR.sub(text, value)
-        # A filled-in string is a literal: --set repo=any must not become a wildcard, nor 1..9 a range.
-        # List items are one_of values, already literal.
-        if not in_list and isinstance(filled, str) and expanded_constraint(filled) != {"exact": filled}:
+        # A filled-in value is a literal: --set repo=any must not become a wildcard,
+        # nor 1..9 a range, and --set pr=57 is that number. Only shorthand reads values that way.
+        if constraint and isinstance(filled, str) and expanded_constraint(filled) != {"exact": filled}:
+            return {"exact": filled}
+        if constraint and isinstance(filled, int) and not isinstance(filled, bool):
             return {"exact": filled}
         return filled
 
-    return substitute({k: v for k, v in data.items() if k != "vars"})
+    def fill_arguments(tool, arguments):
+        if not isinstance(arguments, dict):
+            return substitute(arguments)
+        return fill_mapping(arguments, lambda argument, value: substitute(value, constraint=True))
+
+    def fill_top(key, value):
+        if key == "capabilities" and isinstance(value, dict):
+            return fill_mapping(value, fill_arguments)
+        return substitute(value)
+
+    return fill_mapping({k: v for k, v in data.items() if k != "vars"}, fill_top)
 
 
 def _placeholders(value):
@@ -233,7 +253,8 @@ def _placeholders(value):
 
 def parse_set(items):
     """``--set name=value`` pairs: ``[a, b]`` is a list, a whole number an integer
-    (issue and PR numbers), anything else a string."""
+    (issue and PR numbers), ``"00123"`` in double quotes a string as written,
+    anything else a string."""
     import yaml
 
     values = {}
@@ -247,6 +268,11 @@ def parse_set(items):
                 values[name] = yaml.load(value, Loader=StrictLoader)
             except yaml.YAMLError:
                 raise DocumentError(f"--set {item}: not a valid list") from None
+        elif len(value) >= 2 and value[0] == value[-1] == '"':
+            try:
+                values[name] = json.loads(value)
+            except ValueError:
+                raise DocumentError(f"--set {item}: not a valid quoted string") from None
         elif re.fullmatch(r"-?\d+", value):
             values[name] = int(value)
         else:

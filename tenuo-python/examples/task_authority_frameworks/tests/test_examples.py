@@ -12,8 +12,8 @@ from pathlib import Path
 
 EXAMPLES = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(EXAMPLES))
-from common import NORMAL, Task, demonstrate
-from tenuo import SigningKey, Warrant
+from common import NORMAL, Task, demonstrate  # noqa: E402
+from tenuo import SigningKey, Warrant  # noqa: E402
 
 
 class ReceiverTests(unittest.TestCase):

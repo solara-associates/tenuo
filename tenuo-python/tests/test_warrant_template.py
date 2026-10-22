@@ -253,3 +253,12 @@ def test_cli_issue_takes_set(tmp_path, capsys):
                  "--set", f"project={tmp_path}", "--set", "commands=[git status, git diff]"]) == 0
     caps = json.loads(capsys.readouterr().out)["warrant"]["capabilities"]
     assert caps["terminal"]["command"] == ["git status", "git diff"]
+
+
+def test_parse_set_reads_lists_and_whole_numbers():
+    from tenuo.warrant_template import parse_set
+
+    assert parse_set(["n=412", "prs=[57, 58]", "p=/srv/app", "v=1.5", "t=on"]) == {
+        "n": 412, "prs": [57, 58], "p": "/srv/app", "v": "1.5", "t": "on"}
+    with pytest.raises(DocumentError):
+        parse_set(["novalue"])

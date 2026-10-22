@@ -177,7 +177,9 @@ tenuo-cli warrant issue --template project.yaml --holder agent --set project=$PW
 tenuo-cli warrant issue --template project.yaml --holder agent --set project=$PWD --set "commands=[pytest -q]"
 ```
 
-`${name}` as a whole value takes the variable's value, list or text; inside a
+`--set` reads `[a, b]` as a list and a whole number as an integer (issue and PR
+numbers); anything else is text. `${name}` as a whole value takes the variable's
+value; inside a
 longer string it's replaced as text. Quote it inside `{…}`. A variable without a
 `default` must be set, and the error names the `--set` to add. `template
 validate`, `template show` and `warrant review` take `--set` too. The issued

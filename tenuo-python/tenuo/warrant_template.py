@@ -190,7 +190,8 @@ def resolve_variables(data, values=None):
 
 
 def parse_set(items):
-    """``--set name=value`` pairs; ``[a, b]`` is a list, anything else a string."""
+    """``--set name=value`` pairs: ``[a, b]`` is a list, a whole number an integer
+    (issue and PR numbers), anything else a string."""
     import yaml
 
     values = {}
@@ -198,7 +199,12 @@ def parse_set(items):
         name, sep, value = item.partition("=")
         if not sep or not name:
             raise DocumentError(f"--set {item}: use --set NAME=VALUE")
-        values[name] = yaml.safe_load(value) if value.startswith("[") else value
+        if value.startswith("["):
+            values[name] = yaml.safe_load(value)
+        elif re.fullmatch(r"-?\d+", value):
+            values[name] = int(value)
+        else:
+            values[name] = value
     return values
 
 

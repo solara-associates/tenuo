@@ -357,3 +357,51 @@ def test_observe_logs_one_warning_for_an_integrity_failure(caplog):
         _inbound(BAD_ARGS, forged)
     call_warnings = [r for r in caplog.records if r.levelno >= logging.WARNING and r.name != "tenuo.config"]
     assert [r.getMessage() for r in call_warnings] == ["OBSERVE: would deny issue_payout: invalid_pop"]
+
+
+def test_observe_records_too_many_approvals_instead_of_aborting():
+    from tenuo.approval import sign_approval
+
+    seen: List[Any] = []
+    configure(trusted_roots=ROOTS)
+    bound = GATED.bind(AGENT, trusted_roots=ROOTS)
+    try:
+        enforce_tool_call("issue_payout", GATED_ARGS, bound, trusted_roots=ROOTS,
+                          approval_handler=lambda r: seen.append(r) or sign_approval(r, APPROVER))
+    except Exception:
+        pass
+    assert seen
+    # More than twice the approver count fails approval verification itself.
+    approvals = [sign_approval(seen[0], APPROVER) for _ in range(3)]
+    _observe()
+    result = enforce_tool_call("issue_payout", GATED_ARGS, bound, trusted_roots=ROOTS, approvals=approvals)
+    assert result.allowed and result.observed
+    assert result.error_type == "invalid_approval"
+
+    # Inbound, the observed denial keeps the Authorizer that decided, for its receipt.
+    from tenuo_core import Authorizer
+
+    authorizer = Authorizer(trusted_roots=ROOTS)
+    pop = bytes(GATED.sign(AGENT, "issue_payout", GATED_ARGS, int(time.time())))
+    inbound = verify_inbound_call(tool_name="issue_payout", tool_args=GATED_ARGS, warrant=GATED,
+                                  pop_signature=pop, authorizer=authorizer, approvals=approvals)
+    assert inbound.allowed and inbound.observed
+    assert inbound.authorizer is authorizer
+
+
+def test_mcp_verifier_keeps_the_observed_denial(monkeypatch):
+    from tenuo_core import Authorizer, sign_meta
+
+    from tenuo.mcp.server import MCPVerifier
+    from tenuo.meta import argument_json
+
+    emitted: List[Any] = []
+    _observe()
+    verifier = MCPVerifier(authorizer=Authorizer(trusted_roots=ROOTS))
+    monkeypatch.setattr(verifier, "_control_plane", type("CP", (), {
+        "emit_for_enforcement": lambda self, result, **kw: emitted.append(result)})())
+    meta = {"tenuo": sign_meta([WARRANT], AGENT, "issue_payout", argument_json(BAD_ARGS), int(time.time()))}
+    result = verifier.verify("issue_payout", dict(BAD_ARGS), meta)
+    assert result.allowed and result.observed
+    assert result.error_type == "constraint_violation"
+    assert emitted == [result]

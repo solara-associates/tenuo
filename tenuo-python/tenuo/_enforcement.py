@@ -717,11 +717,12 @@ def _observed_approval_failure(
     warrant_id: Optional[str],
     presented_chain: Optional[Any],
     pop_auth_args: Optional[Dict[str, Any]],
+    authorizer: Optional[Any],
 ) -> Optional[EnforcementResult]:
     """In observe mode, an invalid or expired approval is a recorded denial, not an abort."""
     from .config import should_block_violation
 
-    if should_block_violation() or not isinstance(exc, (InvalidApproval, ApprovalExpired)):
+    if should_block_violation() or not isinstance(exc, (InvalidApproval, ApprovalExpired, ApprovalVerificationError)):
         return None
     error_type = "approval_expired" if isinstance(exc, ApprovalExpired) else "invalid_approval"
     return EnforcementResult(
@@ -733,6 +734,7 @@ def _observed_approval_failure(
         warrant_id=warrant_id,
         presented_chain=presented_chain,
         pop_auth_args=pop_auth_args,
+        authorizer=authorizer,
     )
 
 
@@ -1466,7 +1468,10 @@ def _enforce_tool_call_impl(
             },
         )
     except (InvalidApproval, ApprovalExpired, ApprovalGateTriggered) as e:
-        observed = _observed_approval_failure(e, tool_name, tool_args, warrant_id, _presented_chain, _pop_auth_args)
+        observed = _observed_approval_failure(
+            e, tool_name, tool_args, warrant_id, _presented_chain, _pop_auth_args,
+            authorizer if authorizer is not None else _auth,
+        )
         if observed is None:
             raise
         return observed
@@ -1526,7 +1531,13 @@ def _enforce_tool_call_impl(
         )
     except Exception as e:
         if isinstance(e, (ApprovalRequired, ApprovalDenied, ApprovalVerificationError)):
-            raise
+            observed = _observed_approval_failure(
+                e, tool_name, tool_args, warrant_id, _presented_chain, _pop_auth_args,
+                authorizer if authorizer is not None else _auth,
+            )
+            if observed is None:
+                raise
+            return observed
 
         # Catch-all for unexpected runtime errors (fail closed)
         logger.exception(f"Unexpected error during authorization for {tool_name}")
@@ -1912,7 +1923,10 @@ async def _enforce_tool_call_async_impl(
             },
         )
     except (InvalidApproval, ApprovalExpired, ApprovalGateTriggered) as e:
-        observed = _observed_approval_failure(e, tool_name, tool_args, warrant_id, _presented_chain, _pop_auth_args)
+        observed = _observed_approval_failure(
+            e, tool_name, tool_args, warrant_id, _presented_chain, _pop_auth_args,
+            authorizer if authorizer is not None else _auth,
+        )
         if observed is None:
             raise
         return observed
@@ -1960,7 +1974,13 @@ async def _enforce_tool_call_async_impl(
         )
     except Exception as e:
         if isinstance(e, (ApprovalRequired, ApprovalDenied, ApprovalVerificationError)):
-            raise
+            observed = _observed_approval_failure(
+                e, tool_name, tool_args, warrant_id, _presented_chain, _pop_auth_args,
+                authorizer if authorizer is not None else _auth,
+            )
+            if observed is None:
+                raise
+            return observed
         logger.exception(f"Unexpected error during authorization for {tool_name}")
         return EnforcementResult(
             allowed=False, tool=tool_name, arguments=tool_args,

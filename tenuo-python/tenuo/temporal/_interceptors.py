@@ -1019,6 +1019,7 @@ class TenuoActivityInboundInterceptor:
 
         import time
         start_ns = time.perf_counter_ns()
+        observed_denial = False
         chain_result = None
         activity_fn = getattr(input, "fn", None)
 
@@ -1252,6 +1253,23 @@ class TenuoActivityInboundInterceptor:
             if not enforcement.allowed:
                 enforcement.raise_if_denied()
             chain_result = enforcement.chain_result
+            if enforcement.observed:
+                # Observe mode lets the activity run; record the denial it would have been.
+                self._emit_denial_event(
+                    info=info,
+                    warrant=warrant,
+                    tool=tool_name,
+                    args=args,
+                    reason=enforcement.denial_reason or "denied",
+                    constraint=enforcement.constraint_violated,
+                    start_ns=start_ns,
+                    authorizer=authorizer,
+                    presented_chain=list(chain) if chain else [warrant],
+                    verified_pop=pop_bytes,
+                    pop_auth_args=args,
+                    error_type=enforcement.error_type,
+                )
+                observed_denial = True
 
             # -- 13. Replay Deduplication --
             if info.attempt <= 1:
@@ -1400,6 +1418,8 @@ class TenuoActivityInboundInterceptor:
                 _span_ctx.__exit__(None, None, None)
 
         # -- 15. Emit Allow + Dispatch Activity --
+        if observed_denial:
+            return await self._next.execute_activity(input)
         self._emit_allow_event(
             info=info,
             warrant=warrant,

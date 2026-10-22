@@ -9,6 +9,7 @@ Nexus operation headers.
 from __future__ import annotations
 
 import base64
+import copy
 import dataclasses as _dataclasses
 import functools
 import hashlib
@@ -1334,6 +1335,18 @@ def _verify_nexus_operation(
             )
         if not enforcement.allowed:
             enforcement.raise_if_denied()
+        if enforcement.observed:
+            # Observe mode lets the operation run; record the denial it would have been.
+            would_deny = copy.copy(enforcement)
+            would_deny.allowed = False
+            try:
+                would_deny.raise_if_denied()
+            except _nexus_auth_error_types() as exc:
+                _emit_nexus_control_plane_event(
+                    config, ctx, warrant, chain, tool_name, args,
+                    start_ns=start_ns, exc=exc, authorizer=authorizer, verified_pop=pop_bytes,
+                )
+            return warrant
         chain_result = enforcement.chain_result
         _check_nexus_pop_replay(config, ctx, pop_bytes, tool_name)
         _emit_nexus_control_plane_event(

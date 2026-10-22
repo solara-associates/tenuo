@@ -1389,6 +1389,13 @@ class TenuoActivityInboundInterceptor:
                     # Reaching the approval gate proves that all preceding core
                     # checks, including holder PoP verification, succeeded.
                     pass
+                except (ConstraintViolation, ToolNotAuthorized):
+                    # In observe mode verify_inbound_call below records this
+                    # denial and lets the activity run.
+                    from tenuo.config import should_block_violation
+
+                    if should_block_violation():
+                        raise
                 except (SignatureInvalid, MissingSignature) as pop_exc:
                     raise PopVerificationError(
                         reason=str(pop_exc),
@@ -1407,7 +1414,9 @@ class TenuoActivityInboundInterceptor:
                     approvals=[],
                 )
 
-            approval_needed = preflight.error_type in ("approval_required", "insufficient_approvals")
+            # An observed result already recorded approval_required; observe never asks for approval.
+            approval_needed = not preflight.observed and preflight.error_type in (
+                "approval_required", "insufficient_approvals")
             if not preflight.allowed and not approval_needed:
                 if preflight.error_type == "invalid_pop":
                     raise PopVerificationError(

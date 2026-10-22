@@ -95,8 +95,11 @@ class LocalAuthority:
         if self.warrant is None and not self.observing:
             raise DocumentError("mode: enforce needs a warrant; pass warrant=FILE or set mode: observe")
 
-    def decide(self, tool, arguments):
+    def decide(self, tool, arguments, *, approvals=None, require_constraints=False, schemas=None):
         """The decision enforcement would make for this call, without blocking.
+
+        Pass the call's own approvals and the adapter's ``require_constraints``
+        and ``schemas`` so the recorded decision is the one enforce mode makes.
 
         Returns ``(decision, reason, warrant_id, argument)``: ``decision`` is
         ``"allow"``, ``"deny"``, or ``None`` when there is no warrant to check
@@ -126,6 +129,9 @@ class LocalAuthority:
                     trusted_roots=current.roots,
                     warrant_chain=current.chain[:-1],
                     approval_handler=None,
+                    approvals=list(approvals) if approvals else None,
+                    require_constraints=require_constraints,
+                    schemas=schemas,
                 )
         except ApprovalRequired:
             return "deny", "approval_required", warrant_id, None
@@ -165,10 +171,13 @@ class LocalAuthority:
             os.close(fd)
         return line
 
-    def observe(self, tool, arguments, *, run=None, step=None):
-        """Decide and record one call; never raises for a decision or a record."""
+    def observe(self, tool, arguments, *, run=None, step=None, **check):
+        """Decide and record one call; never raises for a decision or a record.
+
+        ``check`` (approvals, require_constraints, schemas) is passed to ``decide``.
+        """
         try:
-            decision, reason, warrant_id, argument = self.decide(tool, arguments)
+            decision, reason, warrant_id, argument = self.decide(tool, arguments, **check)
         except Exception as exc:
             decision, reason, warrant_id, argument = None, _kind(exc), None, None
         try:

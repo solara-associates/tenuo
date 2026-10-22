@@ -179,14 +179,15 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
             verifier = MCPVerifier(authorizer=Authorizer(trusted_roots=roots), require_warrant=True)
         guard_fastmcp_servers(verifier)
+        server_args = list(args.server_args)
+        if server_args[:1] == ["--"]:
+            server_args = server_args[1:]
+        # Before the import: a server may parse its arguments at import time.
+        sys.argv = [args.server, *server_args]
         entrypoint = _resolve_entrypoint(args.server)
     except WrapError as exc:
         parser.exit(2, f"tenuo.mcp.wrap: {exc}\n")
 
-    server_args = list(args.server_args)
-    if server_args[:1] == ["--"]:
-        server_args = server_args[1:]
-    sys.argv = [args.server, *server_args]
     try:
         result = entrypoint()
     except BaseException as exc:

@@ -442,7 +442,9 @@ how many runs, what enforcement would have decided and why, and which
 arguments denials failed on (`denied_on`). For each argument it shows how many
 distinct values it took, the minimum and maximum of numbers, the values
 themselves when there are five or fewer strings and any prefix they share, and
-whether every run used the same values (`same_in_every_run`). An argument that
+whether every run used the same values (`same_in_every_run`). An argument some
+calls leave out shows how many (`absent_in_calls`); it needs `{optional: …}` in
+the template, since every listed argument is otherwise required. An argument that
 differs between runs usually belongs in the warrant issued for each task; one
 that never changes can be fixed in the template. Strings with whitespace are
 marked `free_text`; they're still listed when there are five or fewer short

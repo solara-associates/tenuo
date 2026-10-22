@@ -6,7 +6,7 @@ import logging
 import threading
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, FrozenSet, List, Literal, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
 from tenuo.temporal._observability import TemporalAuditEvent, TenuoMetrics
 from tenuo.temporal._resolvers import KeyResolver
@@ -121,45 +121,6 @@ class TenuoPluginConfig:
     PoP so verification matches the activity inbound interceptor.
     """
 
-    pop_exclude_args: FrozenSet[str] = field(default_factory=frozenset)
-    """
-    Argument names dropped from PoP signing and verification, globally,
-    for every activity this worker dispatches or executes.
-
-    Use this for arguments that carry no authority and cannot be normalized
-    for PoP (e.g. a framework-injected context object such as a harness
-    ``tool_ctx: AgentToolContext``), not for values a warrant should ever
-    constrain. An excluded argument can never appear in a warrant capability
-    constraint — the plugin never sees it.
-
-    **Applied symmetrically.** The outbound workflow interceptor drops these
-    names from the args dict before ``warrant.sign()``; the inbound activity
-    interceptor drops them the same way before verification. Both sides must
-    set the same value — set it once, on the shared ``TenuoPluginConfig``
-    (or via a preset like ``tenuo.temporal.harness.harness_plugin_config``)
-    used to build both the workflow-worker and activity-worker config so
-    they can't drift.
-
-    **Fails closed on asymmetry.** If only one side excludes a name, the
-    excluded value is missing from — or present in — one side's signed
-    payload but not the other's, so the recomputed PoP bytes differ from
-    what was signed and verification denies with ``PopVerificationError``.
-    It never silently authorizes with the excluded argument unchecked.
-
-    Matching an excluded name to a positional activity argument requires
-    resolving the activity function's parameter names (the same requirement
-    as named warrant constraints — see ``activity_fns``). If a name in this
-    set can't be resolved for a given activity, that activity's PoP
-    computation fails closed with ``TenuoContextError`` rather than silently
-    leaving the un-normalizable value in the signed payload.
-
-    The excluded argument is still delivered to the activity implementation
-    normally — exclusion only affects the PoP-signed / warrant-checked view.
-
-    Empty by default: no arguments are excluded, and wire format / PoP bytes
-    are unchanged from configs that never set this field.
-    """
-
     unwarranted_activities: Tuple[str, ...] = field(default_factory=tuple)
     """
     Activity-type name patterns exempt from warrant requirements — skipped by
@@ -223,7 +184,7 @@ class TenuoPluginConfig:
     ``meta`` is never read for this — it is transport metadata, not
     authority, and never influences the authorization decision.
 
-    **Applied symmetrically**, like ``pop_exclude_args``: set the same value
+    **Applied symmetrically**: set the same value
     on both the workflow-worker and activity-worker config, or verification
     denies (the recomputed PoP won't match what was signed).
 
@@ -398,10 +359,9 @@ class TenuoPluginConfig:
     authorized_signals: Optional[List[str]] = None
     """
     When set, only signals whose name is in this list are accepted.
-    An unrecognized signal raises ``TemporalConstraintViolation`` during
-    signal handling. The plugin registers that type as a workflow failure,
-    so the signal fails the workflow run. When None (default), all signals
-    pass through. One worker shares this list across every workflow it runs.
+    An unrecognized signal is logged and dropped; the workflow run continues.
+    When None (default), all signals pass through. One worker shares this
+    list across every workflow it runs.
     """
 
     authorized_updates: Optional[List[str]] = None
@@ -485,28 +445,28 @@ class TenuoPluginConfig:
     retried more than ~90 s after its first scheduling will fail PoP
     verification.
 
-    **Default ``40`` (±1200 s ≈ ±20 min)** is sized against Temporal's default
-    retry policy (``initial_interval=1s``, ``backoff_coefficient=2``,
-    ``max_interval=100s``), which places the Nth retry at roughly
-    ``1 + 2 + 4 + … + min(2^(N-1), 100)`` seconds. Concretely: ten retries
-    land at ~800 s and fifteen retries at ~1300 s, so 20 min of slack covers
-    the long-tail of flaky-backend scenarios without giving an attacker an
-    hour of replay headroom. A ``PopVerificationError`` on retry becomes
-    non-retryable, so too-tight a window silently turns transient failures
-    into permanent ones — that is precisely what this default prevents.
+    **Default ``40``** checks 20 windows of 30 s on the past side, about 10
+    minutes. Temporal's default retry policy (``initial_interval=1s``,
+    ``backoff_coefficient=2``, maximum interval 100× the initial interval)
+    waits about 7 minutes across ten retries that fail immediately
+    (1+2+4+8+16+32+64+100+100+100 seconds). That fits. Queue time and attempt
+    runtime use the remaining slack. A ``PopVerificationError`` on retry
+    becomes non-retryable, so a window that is too tight turns a transient
+    failure into a permanent one.
 
-    Set higher to accommodate longer retry windows:
+    The past side is ``(retry_pop_max_windows // 2) * 30`` seconds. To cover
+    ``T`` seconds of backoff, set ``retry_pop_max_windows`` to about
+    ``2 * ceil(T / 30)``:
 
-        # 120 × 30 s = 3600 s — covers up to 1 hour of Temporal retries
-        retry_pop_max_windows=120
+        # about 1 hour on the past side
+        retry_pop_max_windows=240
 
-        # 480 × 30 s = 14400 s — covers up to 4 hours
+        # about 2 hours on the past side
         retry_pop_max_windows=480
 
     **Security trade-off:** A wider window means a captured PoP is valid for
     longer on retried tasks (already a lesser concern since dedup is also
-    skipped for attempt > 1).  For most deployments the correct value is
-    ``ceil(max_retry_window_seconds / 30)``.
+    skipped for attempt > 1).
 
     Set to ``None`` to use the same strict window for all attempts, which
     preserves the tightest security guarantee but will cause retry failures for
@@ -657,13 +617,12 @@ class TenuoPluginConfig:
                 stacklevel=2,
             )
 
-        # Normalize the three activity-pattern / exclusion fields to their
+        # Normalize the activity-pattern fields to their
         # declared collection types regardless of what iterable the caller
         # passed (list, set, generator, ...), then validate
         # ``unwarranted_activities`` before anything else touches it — this
         # must run even for an empty/default config so the field is always
         # the frozenset/tuple type its docstring promises.
-        self.pop_exclude_args = frozenset(self.pop_exclude_args)
         self.unwarranted_activities = tuple(self.unwarranted_activities)
         self.mcp_call_tool_activities = tuple(self.mcp_call_tool_activities)
 

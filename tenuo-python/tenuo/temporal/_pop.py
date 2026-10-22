@@ -23,6 +23,96 @@ from tenuo.temporal.exceptions import (
 
 logger = logging.getLogger("tenuo.temporal")
 
+WORKFLOW_NAMESPACE_ARG = "_workflow_namespace"
+WORKFLOW_ID_ARG = "_workflow_id"
+WORKFLOW_SCOPE_ARGS = frozenset({WORKFLOW_NAMESPACE_ARG, WORKFLOW_ID_ARG})
+"""Reserved workflow-scope arguments filled from Temporal, never from the caller.
+
+When a warrant's capability constrains both fields, the plugin adds the running
+workflow's namespace and ID to the arguments it signs and verifies for that
+tool. Capabilities that name neither field are unaffected. Naming only one is
+rejected because a workflow ID is unique only within its Temporal namespace.
+"""
+
+
+def _add_workflow_scope(
+    warrant: Any,
+    tool_name: str,
+    args: Dict[str, Any],
+    workflow_namespace: Optional[str],
+    workflow_id: Optional[str],
+) -> Dict[str, Any]:
+    """Add the Temporal workflow identity when the warrant constrains it.
+
+    Both values come from Temporal (``workflow.info()`` when signing and
+    ``activity.info()`` when verifying). Activity arguments may never use the
+    reserved names, even when workflow scoping is not enabled for the warrant.
+    """
+    reserved_args = WORKFLOW_SCOPE_ARGS.intersection(args)
+    if reserved_args:
+        names = ", ".join(repr(name) for name in sorted(reserved_args))
+        raise TenuoContextError(
+            f"Activity argument name(s) {names} are reserved: the plugin fills "
+            "them from the running Temporal workflow"
+        )
+
+    try:
+        caps = warrant.capabilities
+        # As core resolves a tool: its own capability, else the ``"*"`` one.
+        fields = caps.get(tool_name, caps.get("*"))
+    except Exception as exc:
+        raise TenuoContextError(f"Cannot read the warrant's capabilities for {tool_name!r}") from exc
+
+    if not isinstance(fields, dict):
+        return args
+
+    has_namespace = WORKFLOW_NAMESPACE_ARG in fields
+    has_id = WORKFLOW_ID_ARG in fields
+    if not has_namespace and not has_id:
+        return args
+    if has_namespace != has_id:
+        raise TenuoContextError(
+            f"Temporal workflow scoping for {tool_name!r} must constrain both "
+            f"{WORKFLOW_NAMESPACE_ARG!r} and {WORKFLOW_ID_ARG!r}; a workflow ID "
+            "is unique only within its namespace"
+        )
+    if not workflow_namespace or not workflow_id:
+        raise TenuoContextError(
+            f"Temporal did not provide a complete workflow identity for {tool_name!r}"
+        )
+
+    return {
+        **args,
+        WORKFLOW_NAMESPACE_ARG: workflow_namespace,
+        WORKFLOW_ID_ARG: workflow_id,
+    }
+
+
+def _validate_no_reserved_workflow_parameters(activity_fn: Optional[Any]) -> None:
+    """Reject worker callables whose true signature uses reserved scope names.
+
+    Header-based argument names are authenticated but can differ from the
+    worker callable's parameter names. Inspect the callable independently so a
+    header alias cannot hide a caller-supplied reserved argument.
+    """
+    if activity_fn is None:
+        return
+
+    import inspect
+
+    try:
+        parameter_names = inspect.signature(activity_fn).parameters.keys()
+    except (TypeError, ValueError):
+        return
+
+    reserved_parameters = WORKFLOW_SCOPE_ARGS.intersection(parameter_names)
+    if reserved_parameters:
+        names = ", ".join(repr(name) for name in sorted(reserved_parameters))
+        raise TenuoContextError(
+            f"Activity parameter name(s) {names} are reserved: the plugin fills "
+            "them from the running Temporal workflow"
+        )
+
 
 def _args_dict_uses_only_positional_fallback_keys(args_dict: Dict[str, Any]) -> bool:
     """True if every key is arg0, arg1, ... (PoP positional fallback)."""
@@ -262,47 +352,6 @@ def _prevalidate_args_against_warrant(
         "Wildcard() for fields that don't need structural constraints. "
         "See docs/temporal.md: 'Zero-trust closed-world rule'."
     )
-
-
-# ---------------------------------------------------------------------------
-# PoP argument exclusion (pop_exclude_args) — non-authority args (tool_ctx)
-# ---------------------------------------------------------------------------
-# Excluded names are dropped by *name*, from a name-keyed args dict, never by
-# position. Positional dropping would silently misalign every later
-# positional argument in an activity signature that puts the excluded
-# parameter anywhere but last. Both call sites (outbound signing, inbound
-# verification) resolve the args dict by the same route — activity function
-# introspection — before this filter runs, so a name excluded here was a
-# real parameter name on both sides or this never gets called at all.
-
-
-def _apply_pop_exclusions(
-    args_dict: Dict[str, Any],
-    exclude_args: "frozenset[str] | set[str]",
-    *,
-    activity_fn_resolved: bool,
-    tool_name: str,
-) -> Dict[str, Any]:
-    """Drop ``exclude_args`` names from *args_dict* for PoP signing/verification.
-
-    Raises ``TenuoContextError`` (fail-closed) rather than silently signing
-    or verifying with the excluded value still present when the activity
-    function couldn't be resolved — without it, an excluded name can't be
-    reliably matched against the dict's keys (see
-    ``TenuoPluginConfig.pop_exclude_args``: exclusion is by parameter name,
-    which requires resolving the function's signature).
-    """
-    if not exclude_args:
-        return args_dict
-    if not activity_fn_resolved:
-        raise TenuoContextError(
-            f"TenuoPluginConfig.pop_exclude_args={sorted(exclude_args)!r} is "
-            f"set but the activity function for {tool_name!r} could not be "
-            "resolved, so excluded parameter names can't be matched safely. "
-            "Pass activity_fns=<same list as Worker(activities=...)> in "
-            "TenuoPluginConfig on both the workflow and activity worker."
-        )
-    return {k: v for k, v in args_dict.items() if k not in exclude_args}
 
 
 def _positional_pop_mismatch_message(

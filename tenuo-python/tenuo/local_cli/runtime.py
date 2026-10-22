@@ -142,14 +142,17 @@ class LocalAuthority:
         return "deny", result.error_type or "denied", warrant_id, failed_argument(result)
 
     def record(
-        self, tool, arguments, *, decision=None, reason=None, warrant_id=None, argument=None, run=None, step=None
+        self, tool, arguments, *, decision=None, reason=None, warrant_id=None, argument=None, run=None, step=None,
+        via=None,
     ):
         """Append one call to observations.jsonl in warrantgen's trace format.
 
         Lines carry ``run``, ``step``, ``tool`` and ``args`` as warrantgen reads
         them, plus the observed decision and, for a constraint denial, the
-        ``argument`` whose constraint failed. Argument values are written as given,
-        so the file is created readable by its owner only.
+        ``argument`` whose constraint failed, and ``via``, the integration that saw
+        the call, so ``calls summary`` can say how to hand its warrant over.
+        Argument values are written as given, so the file is created readable by
+        its owner only.
         """
         line = {
             "run": run or self.run_id,
@@ -162,6 +165,8 @@ class LocalAuthority:
             "argument": argument,
             "observed_at": datetime.now(timezone.utc).isoformat(),
         }
+        if via:
+            line["via"] = via
         data = (json.dumps(line, default=str, allow_nan=False) + "\n").encode()
         flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
         fd = os.open(self.observations_path, flags, 0o600)
@@ -171,7 +176,7 @@ class LocalAuthority:
             os.close(fd)
         return line
 
-    def observe(self, tool, arguments, *, run=None, step=None, **check):
+    def observe(self, tool, arguments, *, run=None, step=None, via=None, **check):
         """Decide and record one call; never raises for a decision or a record.
 
         ``check`` (approvals, require_constraints, schemas) is passed to ``decide``.
@@ -190,6 +195,7 @@ class LocalAuthority:
                 argument=argument,
                 run=run,
                 step=step,
+                via=via,
             )
         except Exception:
             logging.getLogger(__name__).warning("Tenuo observe: could not record a call to %s", tool, exc_info=True)

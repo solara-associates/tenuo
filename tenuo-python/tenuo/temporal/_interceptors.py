@@ -431,7 +431,10 @@ class _TenuoWorkflowOutboundInterceptor:
         from tenuo.temporal._workflow import _fail_workflow_non_retryable
 
         child_workflow_type = _workflow_type_name(getattr(input, "workflow", None))
-        parent_warrant = _extract_warrant_from_headers(parent_raw_headers)
+        try:
+            parent_warrant = _extract_warrant_from_headers(parent_raw_headers)
+        except Exception:
+            parent_warrant = None
         if parent_warrant is None:
             # The parent carries Tenuo headers but no usable warrant. Starting
             # the child unwarranted would let it escape the parent's authority.
@@ -449,10 +452,10 @@ class _TenuoWorkflowOutboundInterceptor:
                 getattr(input, "args", ()),
             )
         except Exception as exc:
-            raise TenuoContextError(
+            raise _fail_workflow_non_retryable(TenuoContextError(
                 f"child_warrant_policy raised for child workflow "
                 f"{child_workflow_type!r} (id={input.id!r}): {exc}"
-            ) from exc
+            )) from exc
 
         if decision is None:
             # A configured policy that mints no narrower warrant means the
@@ -464,12 +467,12 @@ class _TenuoWorkflowOutboundInterceptor:
                 "started. Return tools=[...] to start it with a narrower warrant."
             ))
         if not isinstance(decision, dict):
-            raise TenuoContextError(
+            raise _fail_workflow_non_retryable(TenuoContextError(
                 "child_warrant_policy must return None or a dict of "
                 "tenuo_execute_child_workflow()-style kwargs (tools=, "
                 "constraints=, ttl_seconds=, child_key_id=); got "
                 f"{type(decision).__name__}."
-            )
+            ))
         # Unlike tenuo_execute_child_workflow(), omitting tools= here must not
         # mean "all of the parent's tools": a policy returning {} (or a typo'd
         # key) would otherwise hand the child the parent's full authority.
@@ -481,19 +484,37 @@ class _TenuoWorkflowOutboundInterceptor:
                 f"{sorted(_CHILD_POLICY_KEYS)}."
             ))
         tools = decision.get("tools")
-        if not isinstance(tools, (list, tuple)) or not tools:
+        if not isinstance(tools, (list, tuple)) or not tools or not all(isinstance(t, str) for t in tools):
             raise _fail_workflow_non_retryable(TenuoContextError(
                 f"child_warrant_policy must name the child's tools explicitly "
-                f"(non-empty tools=[...]) for child workflow {child_workflow_type!r}."
+                f"(non-empty tools=[...] of tool names) for child workflow {child_workflow_type!r}."
+            ))
+        constraints = decision.get("constraints")
+        if constraints is not None and not (
+            isinstance(constraints, dict)
+            and all(isinstance(k, str) and isinstance(v, dict) for k, v in constraints.items())
+        ):
+            raise _fail_workflow_non_retryable(TenuoContextError(
+                f"child_warrant_policy constraints= must map tool names to dicts of "
+                f"argument constraints for child workflow {child_workflow_type!r}."
+            ))
+        ttl_seconds = decision.get("ttl_seconds")
+        child_key_id = decision.get("child_key_id")
+        if (ttl_seconds is not None and (isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int))) or (
+            child_key_id is not None and not isinstance(child_key_id, str)
+        ):
+            raise _fail_workflow_non_retryable(TenuoContextError(
+                f"child_warrant_policy ttl_seconds= must be an int and child_key_id= a string "
+                f"for child workflow {child_workflow_type!r}."
             ))
 
         from tenuo.temporal._workflow import _attenuated_headers
 
         return await _attenuated_headers(
             tools=list(tools),
-            constraints=decision.get("constraints"),
-            ttl_seconds=decision.get("ttl_seconds"),
-            child_key_id=decision.get("child_key_id"),
+            constraints=constraints,
+            ttl_seconds=ttl_seconds,
+            child_key_id=child_key_id,
         )
 
     def continue_as_new(self, input: Any) -> None:

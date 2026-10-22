@@ -58,7 +58,7 @@ They're the core security building blocks across all Tenuo integrations.
 import logging
 import posixpath
 import shlex
-from typing import TYPE_CHECKING, Any, Dict, List, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 logger = logging.getLogger("tenuo.constraints")
 
@@ -429,6 +429,12 @@ class Shlex:
         ")",  # Subshells
     }
 
+    # shlex with punctuation_chars=True emits every unquoted run of these
+    # characters as one token, so "|&", ">|", "&>", "<>", ">&" and other
+    # combinations never equal a single entry in DANGEROUS_TOKENS. Any
+    # unquoted, unescaped run of these characters is rejected.
+    OPERATOR_CHARS: frozenset = frozenset("();<>|&")
+
     # Characters that trigger shell expansion (checked in raw string)
     # These are dangerous even inside double quotes ("$VAR" expands)
     EXPANSION_CHARS: Set[str] = {"$", "`"}
@@ -464,6 +470,84 @@ class Shlex:
             raise ValueError("Shlex requires at least one allowed binary")
 
         self.allowed_bins: Set[str] = set(allow)
+
+    @staticmethod
+    def tokenize(value: str) -> List[str]:
+        """Split a command the way ``matches()`` sees it.
+
+        ``#`` is an ordinary word character here, never a comment. Python's
+        shlex starts a comment at any unquoted ``#``, but POSIX shells only do
+        so at the start of a word (``ls a#b; rm x`` runs ``rm``), and some
+        shells (interactive zsh) don't recognise comments at all. Reading past
+        ``#`` means an operator after it is always rejected.
+
+        Raises:
+            ValueError: On unbalanced quotes or a trailing escape.
+        """
+        lex = shlex.shlex(value, posix=True, punctuation_chars=True)
+        lex.commenters = ""
+        lex.wordchars += "#"
+        return list(lex)
+
+    @classmethod
+    def unquoted_operator_tokens(cls, value: str) -> List[str]:
+        r"""Return unquoted, unescaped runs of shell operator characters.
+
+        ``shlex`` removes quotes and escapes from its output, so inspecting its
+        tokens cannot distinguish the operator ``|&`` from the literal
+        arguments ``'|&'`` or ``\|\&``. Scan the original source while using
+        the same quote and escape boundaries as ``tokenize()``.
+        """
+        operators: List[str] = []
+        current: List[str] = []
+        quote: Optional[str] = None
+        escaped = False
+
+        def flush() -> None:
+            if current:
+                operators.append("".join(current))
+                current.clear()
+
+        for char in value:
+            if escaped:
+                escaped = False
+                continue
+
+            if quote == "'":
+                # Backslashes are literal inside POSIX single quotes.
+                if char == quote:
+                    quote = None
+                continue
+
+            if quote == '"':
+                if char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = None
+                continue
+
+            if char == "\\":
+                flush()
+                escaped = True
+            elif char in {"'", '"'}:
+                flush()
+                quote = char
+            elif char in cls.OPERATOR_CHARS:
+                current.append(char)
+            else:
+                flush()
+
+        flush()
+        return operators
+
+    @classmethod
+    def dangerous_operator_tokens(cls, value: str, tokens: List[str]) -> List[str]:
+        """Return dangerous operators without misclassifying merged literals."""
+        dangerous = [token for token in tokens if token in cls.DANGEROUS_TOKENS]
+        for token in cls.unquoted_operator_tokens(value):
+            if token not in dangerous:
+                dangerous.append(token)
+        return dangerous
 
     def matches(self, value: Any) -> bool:
         """Check if command string is safe to execute.
@@ -503,8 +587,7 @@ class Shlex:
         # But keeps quoted operators as part of the token:
         #   'ls "foo; bar"' -> ['ls', 'foo; bar']    (safe)
         try:
-            lex = shlex.shlex(value, posix=True, punctuation_chars=True)
-            tokens = list(lex)
+            tokens = self.tokenize(value)
         except ValueError as e:
             # Unbalanced quotes, malformed escapes, etc.
             logger.debug(f"Shlex parse error: {e} in: {value!r}")
@@ -530,11 +613,15 @@ class Shlex:
 
         # R3: Dangerous token check
         # Because we used punctuation_chars=True, any unquoted operator
-        # is guaranteed to be its own token.
-        for token in tokens:
-            if token in self.DANGEROUS_TOKENS:
-                logger.debug(f"Shlex rejected operator token '{token}' in: {value!r}")
-                return False
+        # is guaranteed to be its own token, possibly merged with adjacent
+        # operator characters (see OPERATOR_CHARS).
+        # Preserve the former conservative treatment of the standard operator
+        # tokens even when quoted or escaped (for example find's ``\;``), while
+        # using the raw source to distinguish newly covered merged operators
+        # from quoted/escaped literal arguments.
+        for token in self.dangerous_operator_tokens(value, tokens):
+            logger.debug(f"Shlex rejected operator token '{token}' in: {value!r}")
+            return False
 
         return True
 

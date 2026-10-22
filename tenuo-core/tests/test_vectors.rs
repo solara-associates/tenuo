@@ -3143,6 +3143,30 @@ fn test_vector_a25_1_urlsafe_constraint() {
     );
 }
 
+/// Rev 5 security erratum: host allowlists constrain IP literals, patterns
+/// use URL-host canonicalization, and malformed policy fails closed.
+#[test]
+fn test_vector_a25_1_urlsafe_host_policy_erratum() {
+    use tenuo::constraints::UrlSafe;
+
+    let named_host = UrlSafe::with_domains(vec!["api.example.com"]);
+    assert!(named_host.is_safe("https://api.example.com/data").unwrap());
+    assert!(
+        !named_host.is_safe("https://8.8.8.8/").unwrap(),
+        "A.25.1 erratum: a DNS allowlist must not admit a public IP literal"
+    );
+
+    let exact_ip = UrlSafe::with_domains(vec!["8.8.8.8"]);
+    assert!(exact_ip.is_safe("https://8.8.8.8/").unwrap());
+
+    let idn = UrlSafe::with_domains(vec!["bücher.example"]);
+    assert!(idn.is_safe("https://xn--bcher-kva.example/").unwrap());
+
+    let malformed = UrlSafe::with_domains(vec!["foo.*.example.com"]);
+    assert!(malformed.validate().is_err());
+    assert!(malformed.is_safe("https://api.example.com/").is_err());
+}
+
 #[test]
 fn test_vector_a25_2_subpath_constraint() {
     use tenuo::constraints::Subpath;
@@ -3422,7 +3446,7 @@ fn test_vector_a26_3_urlsafe_check_chain() {
     let holder = worker_key();
 
     let mut cs = ConstraintSet::new();
-    cs.insert("url", UrlSafe::new());
+    cs.insert("url", UrlSafe::with_domains(vec!["api.example.com"]));
 
     let warrant = Warrant::builder()
         .capability("fetch", cs)
@@ -3474,6 +3498,25 @@ fn test_vector_a26_3_urlsafe_check_chain() {
     assert!(
         result.is_err(),
         "A.26.3 UrlSafe should reject SSRF metadata URL"
+    );
+
+    // A public IP is not admitted merely because it passes the block_* checks.
+    let mut public_ip_args: HashMap<String, ConstraintValue> = HashMap::new();
+    public_ip_args.insert(
+        "url".to_string(),
+        ConstraintValue::String("https://8.8.8.8/".to_string()),
+    );
+    let pop = decoded.sign(&holder, "fetch", &public_ip_args).unwrap();
+    let result = data_plane.check_chain(
+        std::slice::from_ref(&decoded),
+        "fetch",
+        &public_ip_args,
+        Some(&pop),
+        &[],
+    );
+    assert!(
+        result.is_err(),
+        "A.26.3 UrlSafe allowlist should reject an unlisted public IP"
     );
 }
 

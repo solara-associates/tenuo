@@ -244,33 +244,38 @@ def test_cli_mode_calls_and_doctor(observing, capsys):
     assert Workspace(workspace.path).config["mode"] == "enforce"
 
 
-def test_temporal_local_observe_maps_to_dry_run_and_records(observing):
+def test_temporal_local_observe_records_without_changing_audit_settings(observing):
     pytest.importorskip("temporalio")
+    from tenuo.exceptions import ConstraintViolation
     from tenuo.temporal import TenuoPluginConfig
+    from tenuo.temporal._interceptors import TenuoActivityInboundInterceptor
 
     workspace, _ = observing
     forwarded = []
-    config = TenuoPluginConfig.local(workspace.path, audit_callback=forwarded.append)
-    assert config.dry_run is True
-    event = SimpleNamespace(
-        decision="DENY",
-        tool="refund",
-        arguments={"order_id": "OTHER"},
-        constraint_violated="order_id",
-        warrant_id="w1",
-        workflow_run_id="run-1",
-        warrant_capabilities=["refund"],
-    )
-    config.audit_callback(event)
-    assert forwarded == [event]
-    line = recorded(workspace)[0]
-    assert (line["run"], line["step"], line["decision"], line["reason"], line["argument"]) == (
-        "run-1",
-        "refund",
-        "deny",
-        "constraint_violation",
-        "order_id",
-    )
+    config = TenuoPluginConfig.local(workspace.path, audit_callback=forwarded.append, approval_handler=lambda r: None)
+    # Observe is dry_run; the user's audit callback and redaction stay as configured,
+    # and an approval handler isn't kept waiting on a gate.
+    assert config.dry_run is True and config.redact_args_in_logs is True
+    assert config.approval_handler is None
+    interceptor = TenuoActivityInboundInterceptor(None, config, "test")
+    info = SimpleNamespace(workflow_id="wf", workflow_type="T", workflow_run_id="run-1", activity_type="refund",
+                           activity_id="1", task_queue="q")
+    warrant = SimpleNamespace(id="w1", tools=["refund"], expires_at=lambda: None)
+    interceptor._emit_denial_event(info=info, warrant=warrant, tool="refund", args={"order_id": "OTHER"},
+                                   reason="nope", constraint="order_id",
+                                   exc=ConstraintViolation("order_id", "value does not match"))
+    interceptor._emit_denial_event(info=info, warrant=warrant, tool="refund", args={"order_id": "A-1"},
+                                   reason="bad chain", constraint="chain_header_invalid")
+    interceptor._emit_allow_event(info=info, warrant=warrant, tool="refund", args={"order_id": "A-1"})
+    lines = recorded(workspace)
+    assert [(x["decision"], x["reason"], x["argument"]) for x in lines] == [
+        ("deny", "constraint_violation", "order_id"),
+        ("deny", "chain_invalid", None),  # a diagnostic label, not an argument
+        ("allow", None, None),
+    ]
+    assert lines[0]["args"] == {"order_id": "OTHER"} and lines[0]["run"] == "run-1" and lines[0]["step"] == "refund"
+    # The audit sink still gets redacted arguments.
+    assert [e.arguments for e in forwarded] == [{"order_id": "[REDACTED]"}] * 3
     workspace.set_mode("enforce")
     assert TenuoPluginConfig.local(workspace.path).dry_run is False
 
@@ -437,3 +442,70 @@ def test_summary_points_to_calls_list_when_prose_is_hidden(observing, capsys):
 def test_init_points_to_observe_first(tmp_path, capsys):
     assert main(["--home", str(tmp_path / ".tenuo"), "--json", "init", "--dev"]) == 0
     assert "tenuo-cli mode observe" in json.loads(capsys.readouterr().out)["message"]
+
+
+def test_observed_decision_uses_the_calls_own_approvals(tmp_path):
+    from tenuo.local_cli.approvals import request_document, response_approval, sign_response
+    from tenuo.local_cli.runtime import LocalAuthority
+
+    workspace = Workspace(tmp_path / ".tenuo")
+    workspace.initialize(dev=True)
+    workspace.set_mode("observe")
+    warrant = WarrantTemplate({**REFUND, "approvals": {
+        "keys": [str(workspace.path / "keys/approver.pub")],
+        "required": {"refund": {"unless": {"amount_cents": "1..5000"}}},
+    }}).mint(workspace.signing_key("issuer"), workspace.public_key("agent"))
+    path = tmp_path / "agent.warrant"
+    path.write_text(encode_chain([warrant]))
+    authority = LocalAuthority(path=workspace.path, warrant=path, announce=False)
+    args = {"order_id": "A-1001", "amount_cents": 6000}
+    assert authority.decide("refund", args)[:2] == ("deny", "approval_required")
+    document = request_document([warrant], "refund", args)
+    signed = sign_response(document, workspace.authorizer(), workspace.signing_key("approver"))
+    approval = response_approval(document, signed, workspace.authorizer())
+    # The same call carrying a valid approval is what enforce mode would allow.
+    assert authority.decide("refund", args, approvals=[approval])[0] == "allow"
+
+
+def test_summary_marks_arguments_some_calls_leave_out(observing, capsys):
+    workspace, _ = observing
+    from tenuo.local_cli.runtime import LocalAuthority
+
+    authority = LocalAuthority(path=workspace.path, announce=False)
+    for run, args in (("r1", {"q": "x", "tenant": "A"}), ("r2", {"q": "x"}), ("r3", {"q": "x", "tenant": "A"})):
+        authority.record("search", args, run=run, step="s")
+    assert main(["--home", str(workspace.path), "--json", "calls", "summary"]) == 0
+    tenant = json.loads(capsys.readouterr().out)["tools"][0]["arguments"]["tenant"]
+    assert tenant["absent_in_calls"] == 1 and tenant["same_in_every_run"] is False
+
+
+@pytest.mark.asyncio
+async def test_mcp_client_observes_an_expired_warrant_without_blocking(tmp_path):
+    pytest.importorskip("fastmcp")
+    import asyncio
+    import os
+    import sys
+    from tenuo.mcp import SecureMCPClient
+
+    workspace = Workspace(tmp_path / ".tenuo")
+    workspace.initialize(dev=True)
+    workspace.set_mode("observe")
+    warrant = WarrantTemplate({**REFUND, "ttl": "1s"}).mint(workspace.signing_key("issuer"), workspace.public_key("agent"))
+    path = tmp_path / "agent.warrant"
+    path.write_text(encode_chain([warrant]))
+    script, marker = tmp_path / "server.py", tmp_path / "effects.txt"
+    script.write_text(
+        "from pathlib import Path\nfrom fastmcp import FastMCP\n"
+        "server = FastMCP('observe')\n"
+        "@server.tool()\ndef refund(order_id: str, amount_cents: int) -> str:\n"
+        f"    with Path({str(marker)!r}).open('a') as out: out.write(order_id + '\\n')\n"
+        "    return 'refunded'\nserver.run(show_banner=False)\n"
+    )
+    await asyncio.sleep(1.5)
+    async with SecureMCPClient.local(
+        path=workspace.path, warrant=path, command=sys.executable, args=[str(script)], env=dict(os.environ)
+    ) as client:
+        await client.call_tool("refund", {"order_id": "A-1001", "amount_cents": 5000})
+    assert marker.read_text().splitlines() == ["A-1001"]
+    (line,) = recorded(workspace)
+    assert line["decision"] == "deny" and line["reason"] != "constraint_violation"

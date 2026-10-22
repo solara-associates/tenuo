@@ -1594,6 +1594,7 @@ class TenuoActivityInboundInterceptor:
                 argument=argument,
                 run=getattr(info, "workflow_run_id", None),
                 step="+".join(sorted(getattr(warrant, "tools", None) or [])) or None,
+                via="temporal",
             )
         except Exception:
             logger.warning("Tenuo observe: could not record a Temporal decision", exc_info=True)

@@ -50,6 +50,10 @@ class LocalAuthority:
         self.key_name = key
         self._last_srl = None
         self._lock = threading.Lock()
+        # One Runtime per holder key and trust set, so this process's receipts
+        # form one chain: the receipt signer links each receipt to the last.
+        self._runtime = None
+        self._runtime_for = None
         dev = " (development identities)" if self.workspace.config["dev_roots"] else ""
         if self.observing:
             try:
@@ -248,9 +252,13 @@ class LocalAuthority:
         if snapshot.key is None:
             yield snapshot, None, None
             return
-        runtime = Runtime(
-            HolderIdentity(snapshot.key), trusted_roots=snapshot.roots, revocation_list=snapshot.srl, receipts="collect"
-        )
+        identity = (bytes(snapshot.key.public_key.to_bytes()), tuple(bytes(r.to_bytes()) for r in snapshot.roots))
+        with self._lock:
+            if self._runtime_for != identity:
+                self._runtime = Runtime(HolderIdentity(snapshot.key), trusted_roots=snapshot.roots, receipts="collect")
+                self._runtime_for = identity
+            runtime = self._runtime
+        runtime.apply_revocation_list(snapshot.srl)
         receipt_path = self.workspace.path / self.workspace.config["audit"]["receipts"]
         if not receipt_path.exists():
             try:
@@ -269,16 +277,19 @@ class LocalAuthority:
                 else:
                     yield snapshot, None, None
         finally:
-            receipts = runtime.drain_receipts()
-            try:
-                for receipt in receipts if persist else ():
-                    sink.handle(receipt)
-            except Exception:
-                # Never turn a completed effect into a retry because audit I/O
-                # failed, or mask an original authorization/tool exception.
-                logging.getLogger(__name__).warning("Local receipt persistence failed", exc_info=True)
-            else:
-                runtime.acknowledge_receipts(len(receipts))
+            # Calls share the Runtime, so drain, write and acknowledge together:
+            # each receipt is written once, in the order it was signed.
+            with self._lock:
+                receipts = runtime.drain_receipts()
+                try:
+                    for receipt in receipts if persist else ():
+                        sink.handle(receipt)
+                except Exception:
+                    # Never turn a completed effect into a retry because audit I/O
+                    # failed, or mask an original authorization/tool exception.
+                    logging.getLogger(__name__).warning("Local receipt persistence failed", exc_info=True)
+                else:
+                    runtime.acknowledge_receipts(len(receipts))
 
 
 def failed_argument(result):

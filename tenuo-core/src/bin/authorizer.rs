@@ -915,17 +915,18 @@ async fn prepare_serve(
                 agent_id: resolved_agent_id,
                 connect_token: resolved_connect_token,
                 revocation_tracker: revocation_tracker.clone(),
-                status: status.clone(),
             };
 
             let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
             let authorizer_id_writer = shared_authorizer_id.clone();
+            let loop_status = status.clone();
             let handle = tokio::spawn(async move {
-                heartbeat::start_heartbeat_loop_until(
+                heartbeat::start_heartbeat_loop_with_status(
                     heartbeat_config,
                     Some(rx),
                     authorizer_id_writer,
                     Some(stop_rx),
+                    loop_status,
                 )
                 .await;
             });

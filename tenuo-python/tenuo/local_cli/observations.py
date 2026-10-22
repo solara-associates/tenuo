@@ -140,11 +140,13 @@ def _filename(step):
     return re.sub(r"[^A-Za-z0-9._-]+", "-", step).strip("-.") or "warrant"
 
 
+def _session_key(step, latest):
+    """A person (platform:id) or cron job step is attached as is; anything else by its latest session."""
+    return step if (":" in step or step.startswith("cron_")) else latest
+
+
 def _hand_off(via, step, latest, warrant):
     """How the warrant reaches the agent, for the integration that saw the calls."""
-    if via in KNOWN_INTEGRATIONS:  # the integration manages sessions: tenuo-cli <name> session attach
-        key = step if (":" in step or step.startswith("cron_")) else latest
-        return f"tenuo-cli {via} session attach --session {shlex.quote(str(key))} --file {shlex.quote(warrant)}"
     client = {
         "mcp": f'SecureMCPClient.local(warrant="{warrant}", ...)',
         "mcp-server": f'the client that calls this server: SecureMCPClient.local(warrant="{warrant}", ...)',
@@ -176,9 +178,20 @@ def _next_steps(calls_path, steps, vias):
             out.append(f"# or: {WARRANTGEN} " + _command(base + ["--from-run", str(latest)] + target)
                        + "   # a warrant per task")
         out.append(f"tenuo-cli template validate --file {shlex.quote(template)}")
-        out.append(f"tenuo-cli warrant issue --template {shlex.quote(template)} --holder agent --out {shlex.quote(warrant)}")
-        for via in sorted(v for v in vias.get(step, {None}) if v) or [None]:
-            out.append(_hand_off(via, step, latest, warrant))
+        integrations = sorted(v for v in vias.get(step, {None}) if v in KNOWN_INTEGRATIONS)
+        for via in integrations:
+            # The integration manages sessions and issues on attach: one command.
+            key = shlex.quote(str(_session_key(step, latest)))
+            out.append(f"tenuo-cli {via} session attach --session {key} --template {shlex.quote(template)}")
+            recipes = calls_path.parent / "recipes" / via
+            if recipes.is_dir():
+                out.append(f"# or a recipe: tenuo-cli {via} session attach --session {key} "
+                           f"--template {shlex.quote(str(recipes))}/RECIPE.yaml --set NAME=VALUE")
+        if not integrations:
+            out.append(f"tenuo-cli warrant issue --template {shlex.quote(template)} --holder agent"
+                       f" --out {shlex.quote(warrant)}")
+            for via in sorted(v for v in vias.get(step, {None}) if v) or [None]:
+                out.append(_hand_off(via, step, latest, warrant))
     out.append("tenuo-cli mode enforce")
     return out
 

@@ -10,7 +10,14 @@ import math
 import re
 from pathlib import Path
 
-from .local_cli.files import DocumentError, check_public_material, fields, load_public_key, load_yaml
+from .local_cli.files import (
+    DocumentError,
+    StrictLoader,
+    check_public_material,
+    fields,
+    load_public_key,
+    load_yaml,
+)
 
 _RANGE = re.compile(r"(-?\d+(?:\.\d+)?)?\.\.(-?\d+(?:\.\d+)?)?")
 
@@ -173,7 +180,7 @@ def resolve_variables(data, values=None):
         if nested:
             raise DocumentError(f"the value of {name} contains ${{{nested[0]}}}; values are used as written")
 
-    def substitute(value):
+    def substitute(value, in_list=False):
         if isinstance(value, dict):
             out = {}
             for key, item in value.items():
@@ -185,23 +192,32 @@ def resolve_variables(data, values=None):
                 out[resolved_key] = substitute(item)
             return out
         if isinstance(value, list):
-            return [substitute(v) for v in value]
+            return [substitute(v, in_list=True) for v in value]
         if not isinstance(value, str):
             return value
-        for name in _VAR.findall(value):
+        names = _VAR.findall(value)
+        if not names:
+            return value
+        for name in names:
             if name not in resolved:
                 raise DocumentError(f"${{{name}}} is used but not declared under vars")
         whole = _VAR.fullmatch(value)
         if whole:
-            return copy.deepcopy(resolved[whole.group(1)])
+            filled = copy.deepcopy(resolved[whole.group(1)])
+        else:
 
-        def text(match):
-            part = resolved[match.group(1)]
-            if isinstance(part, (dict, list)):
-                raise DocumentError(f"${{{match.group(1)}}} is a list; use it as a whole value")
-            return str(part)
+            def text(match):
+                part = resolved[match.group(1)]
+                if isinstance(part, (dict, list)):
+                    raise DocumentError(f"${{{match.group(1)}}} is a list; use it as a whole value")
+                return str(part)
 
-        return _VAR.sub(text, value)
+            filled = _VAR.sub(text, value)
+        # A filled-in string is a literal: --set repo=any must not become a wildcard, nor 1..9 a range.
+        # List items are one_of values, already literal.
+        if not in_list and isinstance(filled, str) and expanded_constraint(filled) != {"exact": filled}:
+            return {"exact": filled}
+        return filled
 
     return substitute({k: v for k, v in data.items() if k != "vars"})
 
@@ -226,7 +242,11 @@ def parse_set(items):
         if not sep or not name:
             raise DocumentError(f"--set {item}: use --set NAME=VALUE")
         if value.startswith("["):
-            values[name] = yaml.safe_load(value)
+            # The template's own loader, so a list item reads the same as it would in the file.
+            try:
+                values[name] = yaml.load(value, Loader=StrictLoader)
+            except yaml.YAMLError:
+                raise DocumentError(f"--set {item}: not a valid list") from None
         elif re.fullmatch(r"-?\d+", value):
             values[name] = int(value)
         else:

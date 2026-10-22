@@ -933,7 +933,9 @@ class MCPVerifier:
                     clean_arguments=clean_arguments,
                     constraints=constraints,
                     denial_reason=(
-                        "No warrant provided. Use SecureMCPClient(inject_warrant=True) "
+                        "No warrant provided. Call this server with a client that presents "
+                        "one: SecureMCPClient.local(warrant=FILE) with a tenuo-cli workspace, "
+                        "or SecureMCPClient(inject_warrant=True) "
                         "for _meta or inject_warrant='argument' for arguments._tenuo, "
                         "or pass params.meta with tenuo metadata into MCPVerifier.verify. "
                         "On FastMCP, register TenuoMiddleware(verifier) so _meta from the "
